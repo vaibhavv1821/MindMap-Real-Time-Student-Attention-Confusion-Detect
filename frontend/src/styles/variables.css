@@ -1,0 +1,8 @@
+:root {
+  --color-attention-high: #3ECF8E;
+  --color-attention-medium: #F5A623;
+  --color-attention-low: #F5484D;
+
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --transition-base: 200ms ease-in-out;
+}

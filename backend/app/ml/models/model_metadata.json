@@ -1,0 +1,36 @@
+{
+  "architecture": "RandomForestClassifier",
+  "estimators": 40,
+  "max_depth": 5,
+  "feature_count": 15,
+  "feature_names": [
+    "ear_mean",
+    "ear_std",
+    "gaze_deviation_mean",
+    "gaze_center_percent",
+    "gaze_away_percent",
+    "sustained_gaze_away_duration_ms",
+    "head_yaw_variance",
+    "head_pitch_variance",
+    "head_roll_variance",
+    "head_movement_magnitude",
+    "blink_rate",
+    "avg_closure_duration_ms",
+    "brow_furrow_mean",
+    "brow_furrow_persistence",
+    "valid_face_percentage"
+  ],
+  "classes": {
+    "attention": [
+      "INATTENTIVE",
+      "ATTENTIVE"
+    ],
+    "confusion": [
+      "NORMAL",
+      "POSSIBLY_CONFUSED"
+    ]
+  },
+  "training_data": "DEMONSTRATION_SYNTHETIC_DATASET",
+  "notice": "DEMONSTRATION MODEL FOR PIPELINE VALIDATION. DAiSEE DATASET INTEGRATION READY.",
+  "trained_at_utc": "2026-09-24T18:56:50.626921+00:00"
+}
