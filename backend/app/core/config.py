@@ -29,34 +29,50 @@ class Settings(BaseSettings):
     )
 
     frontend_url: str = Field(
-        default="",
+        default="https://mind-map-real-time-student-attention.vercel.app",
         validation_alias=AliasChoices("FRONTEND_URL", "frontend_url"),
     )
     cors_origins: Union[list[str], str] = Field(
         default_factory=lambda: [
+            "https://mind-map-real-time-student-attention.vercel.app",
             "http://localhost:5173",
-            "http://localhost:3000",
-            "http://localhost:4173",
             "http://127.0.0.1:5173",
+            "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:4173",
         ],
         validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins"),
     )
 
     def get_cors_origins(self) -> list[str]:
-        origins: list[str] = []
+        origins: list[str] = [
+            "https://mind-map-real-time-student-attention.vercel.app",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
         if isinstance(self.cors_origins, str):
             try:
                 import json
                 parsed = json.loads(self.cors_origins)
                 if isinstance(parsed, list):
-                    origins.extend([str(item).strip() for item in parsed if item])
+                    for item in parsed:
+                        s = str(item).strip().rstrip("/")
+                        if s and s not in origins:
+                            origins.append(s)
                 else:
-                    origins.append(str(parsed).strip())
+                    s = str(parsed).strip().rstrip("/")
+                    if s and s not in origins:
+                        origins.append(s)
             except Exception:
-                origins.extend([o.strip() for o in self.cors_origins.split(",") if o.strip()])
+                for o in self.cors_origins.split(","):
+                    s = o.strip().rstrip("/")
+                    if s and s not in origins:
+                        origins.append(s)
         elif isinstance(self.cors_origins, list):
-            origins.extend([str(o).strip() for o in self.cors_origins if o])
+            for o in self.cors_origins:
+                s = str(o).strip().rstrip("/")
+                if s and s not in origins:
+                    origins.append(s)
 
         if self.frontend_url:
             for url in self.frontend_url.split(","):
