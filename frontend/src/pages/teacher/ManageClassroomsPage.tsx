@@ -18,10 +18,9 @@ export default function ManageClassroomsPage() {
 
   const teacherNav = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: <Icons.Grid size={18} /> },
-    { label: 'Classrooms', path: '/teacher/classrooms', icon: <Icons.Video size={18} /> },
+    { label: 'Classes', path: '/teacher/classes', icon: <Icons.Video size={18} /> },
     { label: 'Analytics', path: '/teacher/analytics', icon: <Icons.BarChart size={18} /> },
-    { label: 'Export Reports', path: '/teacher/reports', icon: <Icons.Download size={18} /> },
-    { label: 'Settings', path: '/teacher/settings', icon: <Icons.Settings size={18} /> },
+    { label: 'Profile', path: '/teacher/profile', icon: <Icons.User size={18} /> },
   ]
 
   const loadClasses = async () => {
@@ -96,11 +95,11 @@ export default function ManageClassroomsPage() {
   }
 
   return (
-    <DashboardLayout navItems={teacherNav} title="Manage Classrooms">
+    <DashboardLayout navItems={teacherNav} title="Classes & Sessions">
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Your Classrooms</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Create classes, start live sessions, and view student enrollment</p>
+          <h2 className="text-xl font-bold text-slate-900">Your Classes</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Manage classes, monitor live AI telemetry, and review session analytics</p>
         </div>
         <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)} leftIcon={<Icons.Plus size={16} />}>
           Create Class
@@ -116,7 +115,7 @@ export default function ManageClassroomsPage() {
           <div className="flex justify-center mb-3 text-slate-400">
             <Icons.Video size={36} />
           </div>
-          <h3 className="text-base font-bold text-slate-800">No Classrooms Yet</h3>
+          <h3 className="text-base font-bold text-slate-800">No Classes Yet</h3>
           <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
             You haven't created any classes yet. Click "Create Class" above to set up your first live classroom and room code.
           </p>
@@ -136,7 +135,9 @@ export default function ManageClassroomsPage() {
                 </div>
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-base font-bold text-slate-900">{c.name}</h3>
+                    <Link to={`/teacher/classes/${c.id}`} className="hover:underline">
+                      <h3 className="text-base font-bold text-slate-900">{c.name}</h3>
+                    </Link>
                     <Badge variant={c.status === 'LIVE' ? 'live' : c.status === 'ENDED' ? 'default' : 'purple'} size="sm" className="font-mono">
                       {c.class_code}
                     </Badge>
@@ -163,6 +164,12 @@ export default function ManageClassroomsPage() {
                   {c.class_code}
                 </Button>
 
+                <Link to={`/teacher/classes/${c.id}`}>
+                  <Button variant="outline" size="sm" leftIcon={<Icons.Eye size={14} />}>
+                    View
+                  </Button>
+                </Link>
+
                 {c.status === 'SCHEDULED' && (
                   <Button
                     variant="primary"
@@ -177,9 +184,9 @@ export default function ManageClassroomsPage() {
 
                 {c.status === 'LIVE' && (
                   <>
-                    <Link to={`/classroom/${c.class_code.toLowerCase()}`}>
+                    <Link to={`/teacher/classes/${c.id}/live`}>
                       <Button variant="primary" size="sm" leftIcon={<Icons.Video size={14} />}>
-                        Enter Room
+                        Live Monitor
                       </Button>
                     </Link>
                     <Button
@@ -194,13 +201,11 @@ export default function ManageClassroomsPage() {
                   </>
                 )}
 
-                {c.status === 'ENDED' && (
-                  <Link to={`/teacher/analytics`}>
-                    <Button variant="outline" size="sm" leftIcon={<Icons.BarChart size={14} />}>
-                      Analytics
-                    </Button>
-                  </Link>
-                )}
+                <Link to={`/teacher/classes/${c.id}/analytics`}>
+                  <Button variant="outline" size="sm" leftIcon={<Icons.BarChart size={14} />}>
+                    Analytics
+                  </Button>
+                </Link>
               </div>
             </Card>
           ))}

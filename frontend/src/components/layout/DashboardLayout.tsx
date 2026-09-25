@@ -14,7 +14,7 @@ export interface NavItem {
 
 export interface DashboardLayoutProps {
   children: React.ReactNode
-  navItems: NavItem[]
+  navItems?: NavItem[]
   title: string
 }
 
@@ -27,6 +27,27 @@ export const DashboardLayout = ({ children, navItems, title }: DashboardLayoutPr
     logout()
     navigate('/login')
   }
+
+  const isTeacher = user?.role === 'teacher' || user?.role === 'admin'
+
+  const defaultTeacherNav: NavItem[] = [
+    { label: 'Dashboard', path: '/teacher/dashboard', icon: <Icons.Grid size={18} /> },
+    { label: 'Classes', path: '/teacher/classes', icon: <Icons.Video size={18} /> },
+    { label: 'Analytics', path: '/teacher/analytics', icon: <Icons.BarChart size={18} /> },
+    { label: 'Profile', path: '/teacher/profile', icon: <Icons.User size={18} /> },
+  ]
+
+  const defaultStudentNav: NavItem[] = [
+    { label: 'Dashboard', path: '/student/dashboard', icon: <Icons.Grid size={18} /> },
+    { label: 'My Classes', path: '/student/classes', icon: <Icons.Video size={18} /> },
+    { label: 'Analytics', path: '/student/analytics', icon: <Icons.BarChart size={18} /> },
+    { label: 'Profile', path: '/student/profile', icon: <Icons.User size={18} /> },
+  ]
+
+  // Use role-specific navigation to ensure strict separation
+  const activeNav = navItems && navItems.length > 0
+    ? navItems.filter((item) => isTeacher ? !item.path.startsWith('/student') : !item.path.startsWith('/teacher'))
+    : (isTeacher ? defaultTeacherNav : defaultStudentNav)
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
@@ -45,8 +66,8 @@ export const DashboardLayout = ({ children, navItems, title }: DashboardLayoutPr
 
           {/* Navigation Links */}
           <nav className="p-3 space-y-1">
-            {navItems.map((item) => {
-              const isActive = location.pathname === item.path
+            {activeNav.map((item) => {
+              const isActive = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
               return (
                 <Link
                   key={item.path}
@@ -92,17 +113,25 @@ export const DashboardLayout = ({ children, navItems, title }: DashboardLayoutPr
         <header className="h-14 border-b border-slate-200 bg-white px-6 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <h1 className="text-base font-bold text-slate-900">{title}</h1>
-            <Badge variant="default" size="sm">
+            <Badge variant={isTeacher ? 'purple' : 'success'} size="sm">
               {user?.role?.toUpperCase() || 'STUDENT'}
             </Badge>
           </div>
 
           <div className="flex items-center gap-3">
-            <Link to="/classroom/demo">
-              <Button variant="primary" size="sm" leftIcon={<Icons.Video size={15} />}>
-                Join Live Classroom
-              </Button>
-            </Link>
+            {isTeacher ? (
+              <Link to="/teacher/classes">
+                <Button variant="primary" size="sm" leftIcon={<Icons.Video size={15} />}>
+                  My Classes
+                </Button>
+              </Link>
+            ) : (
+              <Link to="/student/classes">
+                <Button variant="primary" size="sm" leftIcon={<Icons.Video size={15} />}>
+                  My Classes
+                </Button>
+              </Link>
+            )}
           </div>
         </header>
 

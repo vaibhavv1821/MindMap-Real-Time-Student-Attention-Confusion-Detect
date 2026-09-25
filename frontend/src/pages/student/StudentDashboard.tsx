@@ -24,11 +24,10 @@ export default function StudentDashboard() {
   const [isLoading, setIsLoading] = useState(true)
 
   const studentNav = [
-    { label: 'Overview', path: '/student/dashboard', icon: <Icons.Grid size={18} /> },
-    { label: 'My Classes', path: '/student/classes', icon: <Icons.Calendar size={18} /> },
-    { label: 'Attendance', path: '/student/attendance', icon: <Icons.CheckCircle size={18} /> },
-    { label: 'Reports', path: '/student/reports', icon: <Icons.BarChart size={18} /> },
-    { label: 'Profile', path: '/student/profile', icon: <Icons.Settings size={18} /> },
+    { label: 'Dashboard', path: '/student/dashboard', icon: <Icons.Grid size={18} /> },
+    { label: 'My Classes', path: '/student/classes', icon: <Icons.Video size={18} /> },
+    { label: 'Analytics', path: '/student/analytics', icon: <Icons.BarChart size={18} /> },
+    { label: 'Profile', path: '/student/profile', icon: <Icons.User size={18} /> },
   ]
 
   const loadData = async () => {
@@ -181,7 +180,7 @@ export default function StudentDashboard() {
 
                 <div className="mt-4 pt-3 border-t border-slate-100">
                   {c.is_live ? (
-                    <Link to={`/classroom/${c.class_code.toLowerCase()}`}>
+                    <Link to={`/student/class/${c.class_code}`}>
                       <Button variant="primary" size="sm" className="w-full" leftIcon={<Icons.Video size={14} />}>
                         Enter Live Class
                       </Button>

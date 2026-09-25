@@ -32,11 +32,10 @@ export default function StudentReportsPage() {
   const [isLoading, setIsLoading] = useState(true)
 
   const studentNav = [
-    { label: 'Overview', path: '/student/dashboard', icon: <Icons.Grid size={18} /> },
-    { label: 'My Classes', path: '/student/classes', icon: <Icons.Calendar size={18} /> },
-    { label: 'Attendance', path: '/student/attendance', icon: <Icons.CheckCircle size={18} /> },
-    { label: 'AI Reports', path: '/student/reports', icon: <Icons.BarChart size={18} /> },
-    { label: 'Profile & Settings', path: '/student/profile', icon: <Icons.Settings size={18} /> },
+    { label: 'Dashboard', path: '/student/dashboard', icon: <Icons.Grid size={18} /> },
+    { label: 'My Classes', path: '/student/classes', icon: <Icons.Video size={18} /> },
+    { label: 'Analytics', path: '/student/analytics', icon: <Icons.BarChart size={18} /> },
+    { label: 'Profile', path: '/student/profile', icon: <Icons.User size={18} /> },
   ]
 
   useEffect(() => {

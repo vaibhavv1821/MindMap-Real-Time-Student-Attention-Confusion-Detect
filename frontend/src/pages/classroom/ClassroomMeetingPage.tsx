@@ -27,7 +27,8 @@ interface PeerStudent {
 }
 
 export default function ClassroomMeetingPage() {
-  const { code } = useParams()
+  const { code, classCode } = useParams<{ code?: string; classCode?: string }>()
+  const targetCode = classCode || code
   const navigate = useNavigate()
   const { user } = useAuthContext()
   const { showToast } = useToast()
@@ -128,14 +129,14 @@ export default function ClassroomMeetingPage() {
 
   // 1. Fetch real class metadata from MongoDB
   useEffect(() => {
-    if (!code) return
+    if (!targetCode) return
     classApi
-      .getClassDetails(code)
+      .getClassDetails(targetCode)
       .then((data) => setClassInfo(data))
       .catch(() => {
-        showToast({ type: 'warning', title: 'Live Session', message: `Connected to classroom: ${code.toUpperCase()}` })
+        showToast({ type: 'warning', title: 'Live Session', message: `Connected to classroom: ${targetCode.toUpperCase()}` })
       })
-  }, [code])
+  }, [targetCode])
 
   // 2. Start local MediaPipe FaceMesh & AI Telemetry Engine
   useEffect(() => {
@@ -155,13 +156,13 @@ export default function ClassroomMeetingPage() {
 
   // 3. Connect to WebSocket room and stream telemetry
   useEffect(() => {
-    if (!code) return
-    const wsUrl = `${env.wsBaseUrl}/${code}`
+    if (!targetCode) return
+    const wsUrl = `${env.wsBaseUrl}/${targetCode}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
-      console.log(`[MindMap] Connected to classroom WebSocket: ${code}`)
+      console.log(`[MindMap] Connected to classroom WebSocket: ${targetCode}`)
     }
 
     ws.onmessage = (event) => {
@@ -258,7 +259,7 @@ export default function ClassroomMeetingPage() {
 
   const isTeacher = user?.role === 'teacher'
   const classroomTitle = classInfo?.name || 'Live AI Classroom'
-  const roomCode = classInfo?.class_code || code?.toUpperCase() || 'ROOM'
+  const roomCode = classInfo?.class_code || targetCode?.toUpperCase() || 'ROOM'
   const instructorName = classInfo?.teacher_name || (isTeacher ? user?.name : 'Faculty Instructor')
 
   return (

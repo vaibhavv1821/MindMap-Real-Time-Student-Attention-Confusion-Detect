@@ -21,6 +21,9 @@ import StudentProfilePage from '@/pages/student/StudentProfilePage'
 // Teacher Portal Pages
 import TeacherDashboard from '@/pages/teacher/TeacherDashboard'
 import ManageClassroomsPage from '@/pages/teacher/ManageClassroomsPage'
+import TeacherClassDetailPage from '@/pages/teacher/TeacherClassDetailPage'
+import TeacherLiveMonitoringPage from '@/pages/teacher/TeacherLiveMonitoringPage'
+import TeacherClassAnalyticsPage from '@/pages/teacher/TeacherClassAnalyticsPage'
 import TeacherAnalyticsPage from '@/pages/teacher/TeacherAnalyticsPage'
 import TeacherReportsPage from '@/pages/teacher/TeacherReportsPage'
 import TeacherProfilePage from '@/pages/teacher/TeacherProfilePage'
@@ -84,7 +87,9 @@ export default function Router() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
 
-        {/* Student Portal (Protected for Students) */}
+        {/* ========================================== */}
+        {/* STUDENT PORTAL (Protected for Students) */}
+        {/* ========================================== */}
         <Route
           path="/student/dashboard"
           element={
@@ -102,10 +107,18 @@ export default function Router() {
           }
         />
         <Route
-          path="/student/attendance"
+          path="/student/class/:classCode"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'teacher', 'admin']}>
+              <ClassroomMeetingPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/analytics"
           element={
             <ProtectedRoute allowedRoles={['student', 'admin']}>
-              <StudentAttendancePage />
+              <StudentReportsPage />
             </ProtectedRoute>
           }
         />
@@ -118,6 +131,14 @@ export default function Router() {
           }
         />
         <Route
+          path="/student/attendance"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentAttendancePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/student/profile"
           element={
             <ProtectedRoute allowedRoles={['student', 'admin']}>
@@ -126,7 +147,9 @@ export default function Router() {
           }
         />
 
-        {/* Teacher Portal (Protected for Teachers) */}
+        {/* ========================================== */}
+        {/* TEACHER PORTAL (Protected for Teachers) */}
+        {/* ========================================== */}
         <Route
           path="/teacher/dashboard"
           element={
@@ -136,10 +159,42 @@ export default function Router() {
           }
         />
         <Route
+          path="/teacher/classes"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <ManageClassroomsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/teacher/classrooms"
           element={
             <ProtectedRoute allowedRoles={['teacher', 'admin']}>
               <ManageClassroomsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/classes/:classId"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherClassDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/classes/:classId/live"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherLiveMonitoringPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/classes/:classId/analytics"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherClassAnalyticsPage />
             </ProtectedRoute>
           }
         />
@@ -160,6 +215,14 @@ export default function Router() {
           }
         />
         <Route
+          path="/teacher/profile"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherProfilePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/teacher/settings"
           element={
             <ProtectedRoute allowedRoles={['teacher', 'admin']}>
@@ -168,7 +231,7 @@ export default function Router() {
           }
         />
 
-        {/* Live AI Classroom Room (Authenticated) */}
+        {/* Live Classroom Meeting Room (Shared / Dynamic) */}
         <Route
           path="/classroom/:code"
           element={

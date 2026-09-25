@@ -17,10 +17,9 @@ export default function TeacherProfilePage() {
 
   const teacherNav = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: <Icons.Grid size={18} /> },
-    { label: 'Classrooms', path: '/teacher/classrooms', icon: <Icons.Video size={18} /> },
+    { label: 'Classes', path: '/teacher/classes', icon: <Icons.Video size={18} /> },
     { label: 'Analytics', path: '/teacher/analytics', icon: <Icons.BarChart size={18} /> },
-    { label: 'Export Reports', path: '/teacher/reports', icon: <Icons.Download size={18} /> },
-    { label: 'Settings', path: '/teacher/settings', icon: <Icons.Settings size={18} /> },
+    { label: 'Profile', path: '/teacher/profile', icon: <Icons.User size={18} /> },
   ]
 
   const handleSave = () => {
