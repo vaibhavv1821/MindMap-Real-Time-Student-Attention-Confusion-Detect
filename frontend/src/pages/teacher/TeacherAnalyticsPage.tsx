@@ -85,39 +85,42 @@ export default function TeacherAnalyticsPage() {
     await loadClassData(cls.id)
   }
 
-  const avgAttention = analytics?.overall_avg_attention ?? (students.length > 0
-    ? Math.round(students.reduce((acc, s) => acc + (s.avg_attention ?? 85), 0) / students.length)
-    : 85)
+  const avgAttention = analytics?.overall_avg_attention && analytics.overall_avg_attention > 0
+    ? Math.round(analytics.overall_avg_attention)
+    : students.length > 0 && students.some((s) => s.avg_attention > 0)
+    ? Math.round(
+        students.filter((s) => s.avg_attention > 0).reduce((acc, s) => acc + s.avg_attention, 0) /
+        students.filter((s) => s.avg_attention > 0).length
+      )
+    : 0
 
-  const avgConfusion = analytics?.overall_avg_confusion ?? (students.length > 0
-    ? Math.round(students.reduce((acc, s) => acc + (s.avg_confusion ?? 15), 0) / students.length)
-    : 15)
+  const avgConfusion = analytics?.overall_avg_confusion && analytics.overall_avg_confusion > 0
+    ? Math.round(analytics.overall_avg_confusion)
+    : students.length > 0 && students.some((s) => s.avg_confusion > 0)
+    ? Math.round(
+        students.filter((s) => s.avg_confusion > 0).reduce((acc, s) => acc + s.avg_confusion, 0) /
+        students.filter((s) => s.avg_confusion > 0).length
+      )
+    : 0
 
   // Distribution calculation from real enrolled students
-  const highCount = students.filter((s) => (s.avg_attention ?? 85) >= 70).length
-  const medCount = students.filter((s) => (s.avg_attention ?? 85) >= 40 && (s.avg_attention ?? 85) < 70).length
-  const lowCount = students.filter((s) => (s.avg_attention ?? 85) < 40).length
+  const highCount = students.filter((s) => s.avg_attention >= 70).length
+  const medCount = students.filter((s) => s.avg_attention >= 40 && s.avg_attention < 70).length
+  const lowCount = students.filter((s) => s.avg_attention > 0 && s.avg_attention < 40).length
 
-  const distributionData = students.length > 0
-    ? [
-        { category: 'High (70-100%)', count: highCount },
-        { category: 'Medium (40-69%)', count: medCount },
-        { category: 'Low (< 40%)', count: lowCount },
-      ]
-    : [
-        { category: 'High (70-100%)', count: 1 },
-        { category: 'Medium (40-69%)', count: 0 },
-        { category: 'Low (< 40%)', count: 0 },
-      ]
-
-  const classroomMetrics = [
-    { time: '10:00', attention: Math.min(100, avgAttention + 5), confusion: Math.max(0, avgConfusion - 5) },
-    { time: '10:15', attention: avgAttention, confusion: avgConfusion },
-    { time: '10:30', attention: Math.max(30, avgAttention - 15), confusion: Math.min(70, avgConfusion + 18) },
-    { time: '10:45', attention: Math.min(95, avgAttention + 2), confusion: Math.max(5, avgConfusion - 2) },
-    { time: '11:00', attention: Math.min(100, avgAttention + 7), confusion: Math.max(0, avgConfusion - 7) },
-    { time: '11:15', attention: avgAttention, confusion: avgConfusion },
+  const distributionData = [
+    { category: 'High (70-100%)', count: highCount },
+    { category: 'Medium (40-69%)', count: medCount },
+    { category: 'Low (< 40%)', count: lowCount },
   ]
+
+  const classroomMetrics = analytics?.recent_sessions && analytics.recent_sessions.length > 0
+    ? analytics.recent_sessions.map((s, idx) => ({
+        time: s.class_code ? `${s.class_code} (#${idx + 1})` : `Session ${idx + 1}`,
+        attention: Math.round(s.avg_attention || 0),
+        confusion: Math.round(s.avg_confusion || 0),
+      }))
+    : []
 
   return (
     <DashboardLayout navItems={teacherNav} title="Classroom Attention & Confusion Analytics">
@@ -184,20 +187,28 @@ export default function TeacherAnalyticsPage() {
                   </Badge>
                 </div>
 
-                <div className="h-64 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={classroomMetrics}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2A2A2E" />
-                      <XAxis dataKey="time" stroke="#8A8A8E" fontSize={11} />
-                      <YAxis stroke="#8A8A8E" fontSize={11} domain={[0, 100]} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#121214', borderColor: '#2A2A2E', borderRadius: '12px', color: '#fff' }}
-                      />
-                      <Area type="monotone" dataKey="attention" stroke="#3ECF8E" fill="#3ECF8E" fillOpacity={0.2} name="Avg Attention %" />
-                      <Area type="monotone" dataKey="confusion" stroke="#F5484D" fill="#F5484D" fillOpacity={0.3} name="Confusion Spike %" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                {classroomMetrics.length === 0 ? (
+                  <div className="h-64 w-full flex flex-col items-center justify-center text-slate-400 space-y-2 border border-dashed border-border rounded-lg">
+                    <Icons.TrendingUp size={28} />
+                    <p className="text-xs font-medium text-slate-300">No session timeline recorded yet.</p>
+                    <p className="text-[11px] text-muted">Conduct a live classroom session to record real-time engagement telemetry.</p>
+                  </div>
+                ) : (
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={classroomMetrics}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2A2A2E" />
+                        <XAxis dataKey="time" stroke="#8A8A8E" fontSize={11} />
+                        <YAxis stroke="#8A8A8E" fontSize={11} domain={[0, 100]} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#121214', borderColor: '#2A2A2E', borderRadius: '12px', color: '#fff' }}
+                        />
+                        <Area type="monotone" dataKey="attention" stroke="#3ECF8E" fill="#3ECF8E" fillOpacity={0.2} name="Avg Attention %" />
+                        <Area type="monotone" dataKey="confusion" stroke="#F5484D" fill="#F5484D" fillOpacity={0.3} name="Confusion Spike %" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
               </Card>
 
               <Card variant="glass" className="p-6">

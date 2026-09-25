@@ -29,6 +29,7 @@ interface LiveStudent {
   confusion: number
   cameraActive: boolean
   lastSeen: Date
+  indicator?: string
 }
 
 export default function TeacherLiveMonitoringPage() {
@@ -97,21 +98,38 @@ export default function TeacherLiveMonitoringPage() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === 'telemetry' || msg.attention !== undefined) {
+          if (
+            msg.student_id ||
+            msg.type === 'telemetry' ||
+            msg.attention !== undefined ||
+            msg.attention_score !== undefined
+          ) {
             setLiveStudents((prev) => {
               const studentName = msg.student_name || msg.user_name || 'Enrolled Student'
-              const studentEmail = msg.email || ''
-              const studentId = msg.student_id || studentName
+              const studentEmail = msg.student_email || msg.email || ''
+              const studentId = String(msg.student_id || studentName)
+
+              const attRaw = msg.attention_score ?? msg.attention
+              const confRaw = msg.confusion_score ?? msg.confusion
+
+              const attVal = attRaw !== undefined ? Math.round(Number(attRaw)) : 85
+              const confVal = confRaw !== undefined ? Math.round(Number(confRaw)) : 15
+
+              const isCamActive =
+                msg.connection_status === 'ONLINE' ||
+                msg.camera_active === true ||
+                (msg.camera_active !== false && msg.connection_status !== 'CAMERA_MUTED')
 
               const existingIdx = prev.findIndex((s) => s.id === studentId || s.name === studentName)
               const updatedStudent: LiveStudent = {
                 id: studentId,
                 name: studentName,
                 email: studentEmail,
-                attention: Math.round(msg.attention ?? 85),
-                confusion: Math.round(msg.confusion ?? 15),
-                cameraActive: msg.camera_active !== false,
+                attention: attVal,
+                confusion: confVal,
+                cameraActive: isCamActive,
                 lastSeen: new Date(),
+                indicator: msg.reasons && msg.reasons.length > 0 ? msg.reasons[0] : undefined,
               }
 
               if (existingIdx >= 0) {
@@ -364,9 +382,15 @@ export default function TeacherLiveMonitoringPage() {
                         {s.email && <div className="text-[11px] text-slate-500 font-mono">{s.email}</div>}
                       </td>
                       <td className="p-3">
-                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium border ${
+                            s.cameraActive
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}
+                        >
                           <Icons.Video size={12} />
-                          Active
+                          {s.cameraActive ? 'Active' : 'Muted'}
                         </span>
                       </td>
                       <td className="p-3 font-mono font-bold">
@@ -378,7 +402,11 @@ export default function TeacherLiveMonitoringPage() {
                         {s.confusion}%
                       </td>
                       <td className="p-3">
-                        {s.confusion >= 40 ? (
+                        {s.indicator ? (
+                          <Badge variant={s.confusion >= 40 ? 'purple' : s.attention >= 70 ? 'success' : 'danger'} size="sm">
+                            {s.indicator}
+                          </Badge>
+                        ) : s.confusion >= 40 ? (
                           <Badge variant="purple" size="sm">
                             Brow Furrowing Detected
                           </Badge>

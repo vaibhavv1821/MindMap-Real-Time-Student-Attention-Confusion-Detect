@@ -18,7 +18,7 @@ import { Icons } from '@/components/ui/Icons'
 import { generateSessionPDFReport } from '../teacher/PDFReportExporter'
 import { useToast } from '@/components/ui/Toast'
 import { useAuthContext } from '@/context/AuthContext'
-import { classApi, EnrollmentItem, StudentStats } from '@/services/classApi'
+import { classApi, EnrollmentItem, StudentStats, AttendanceRecord } from '@/services/classApi'
 import { useNavigate } from 'react-router-dom'
 
 export default function StudentReportsPage() {
@@ -29,6 +29,7 @@ export default function StudentReportsPage() {
   const [classes, setClasses] = useState<EnrollmentItem[]>([])
   const [selectedClass, setSelectedClass] = useState<EnrollmentItem | null>(null)
   const [stats, setStats] = useState<StudentStats | null>(null)
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   const studentNav = [
@@ -45,9 +46,10 @@ export default function StudentReportsPage() {
   const fetchStudentData = async () => {
     try {
       setIsLoading(true)
-      const [classList, studentStats] = await Promise.allSettled([
+      const [classList, studentStats, attendanceList] = await Promise.allSettled([
         classApi.getStudentClasses(),
         classApi.getStudentStats(),
+        classApi.getStudentAttendance(),
       ])
 
       if (classList.status === 'fulfilled') {
@@ -60,6 +62,10 @@ export default function StudentReportsPage() {
       if (studentStats.status === 'fulfilled') {
         setStats(studentStats.value)
       }
+
+      if (attendanceList.status === 'fulfilled') {
+        setAttendanceRecords(attendanceList.value)
+      }
     } catch (err: any) {
       showToast({ type: 'danger', title: 'Failed to load report data', message: err.message || 'Error fetching data' })
     } finally {
@@ -67,28 +73,25 @@ export default function StudentReportsPage() {
     }
   }
 
-  const avgAttention = stats?.overall_avg_attention ?? 88
-  const avgConfusion = stats?.overall_avg_confusion ?? 12
+  const avgAttention = stats?.overall_avg_attention && stats.overall_avg_attention > 0
+    ? Math.round(stats.overall_avg_attention)
+    : 0
+  const avgConfusion = stats?.overall_avg_confusion && stats.overall_avg_confusion > 0
+    ? Math.round(stats.overall_avg_confusion)
+    : 0
 
-  const attentionData = [
-    { time: '00m', attention: Math.min(100, avgAttention + 7), confusion: Math.max(0, avgConfusion - 7) },
-    { time: '15m', attention: Math.min(100, avgAttention + 2), confusion: Math.max(0, avgConfusion - 2) },
-    { time: '30m', attention: Math.max(30, avgAttention - 13), confusion: Math.min(70, avgConfusion + 13) },
-    { time: '45m', attention: avgAttention, confusion: avgConfusion },
-    { time: '60m', attention: Math.min(100, avgAttention + 6), confusion: Math.max(0, avgConfusion - 6) },
-    { time: '75m', attention: Math.max(40, avgAttention - 6), confusion: Math.min(60, avgConfusion + 6) },
-    { time: '90m', attention: Math.min(100, avgAttention + 3), confusion: Math.max(0, avgConfusion - 3) },
-  ]
-
-  const subjectData = classes.length > 0
-    ? classes.map((c) => ({
-        subject: c.subject || c.class_name,
-        score: avgAttention,
+  const attentionData = attendanceRecords.length > 0
+    ? attendanceRecords.map((r, idx) => ({
+        time: r.class_code || `Session ${idx + 1}`,
+        attention: Math.round(r.avg_attention || 0),
+        confusion: Math.round(r.avg_confusion || 0),
       }))
-    : [
-        { subject: 'Computer Science', score: avgAttention },
-        { subject: 'Mathematics', score: Math.max(60, avgAttention - 5) },
-      ]
+    : []
+
+  const subjectData = classes.map((c) => ({
+    subject: c.subject || c.class_name,
+    score: avgAttention > 0 ? avgAttention : 0,
+  }))
 
   const handleExportPDF = () => {
     const className = selectedClass ? selectedClass.class_name : 'Personal Session Report'
@@ -231,30 +234,38 @@ export default function StudentReportsPage() {
                   <Badge variant="purple" size="sm">Personal Stream</Badge>
                 </div>
 
-                <div className="h-64 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={attentionData}>
-                      <defs>
-                        <linearGradient id="colorAtt" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3ECF8E" stopOpacity={0.4} />
-                          <stop offset="95%" stopColor="#3ECF8E" stopOpacity={0} />
-                        </linearGradient>
-                        <linearGradient id="colorConf" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#A855F7" stopOpacity={0.4} />
-                          <stop offset="95%" stopColor="#A855F7" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2A2A2E" />
-                      <XAxis dataKey="time" stroke="#8A8A8E" fontSize={11} />
-                      <YAxis stroke="#8A8A8E" fontSize={11} domain={[0, 100]} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#121214', borderColor: '#2A2A2E', borderRadius: '12px', color: '#fff' }}
-                      />
-                      <Area type="monotone" dataKey="attention" stroke="#3ECF8E" fillOpacity={1} fill="url(#colorAtt)" name="Attention %" />
-                      <Area type="monotone" dataKey="confusion" stroke="#A855F7" fillOpacity={1} fill="url(#colorConf)" name="Confusion %" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                {attentionData.length === 0 ? (
+                  <div className="h-64 w-full flex flex-col items-center justify-center text-slate-400 space-y-2 border border-dashed border-border rounded-lg">
+                    <Icons.TrendingUp size={28} />
+                    <p className="text-xs font-medium text-slate-300">No session focus dynamics recorded yet.</p>
+                    <p className="text-[11px] text-muted">Join a live class to record personal attention & confusion metrics.</p>
+                  </div>
+                ) : (
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={attentionData}>
+                        <defs>
+                          <linearGradient id="colorAtt" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3ECF8E" stopOpacity={0.4} />
+                            <stop offset="95%" stopColor="#3ECF8E" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="colorConf" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#A855F7" stopOpacity={0.4} />
+                            <stop offset="95%" stopColor="#A855F7" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2A2A2E" />
+                        <XAxis dataKey="time" stroke="#8A8A8E" fontSize={11} />
+                        <YAxis stroke="#8A8A8E" fontSize={11} domain={[0, 100]} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#121214', borderColor: '#2A2A2E', borderRadius: '12px', color: '#fff' }}
+                        />
+                        <Area type="monotone" dataKey="attention" stroke="#3ECF8E" fillOpacity={1} fill="url(#colorAtt)" name="Attention %" />
+                        <Area type="monotone" dataKey="confusion" stroke="#A855F7" fillOpacity={1} fill="url(#colorConf)" name="Confusion %" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
               </Card>
 
               {/* Subject Breakdown Bar Chart */}

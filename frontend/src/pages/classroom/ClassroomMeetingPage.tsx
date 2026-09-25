@@ -198,7 +198,7 @@ export default function ClassroomMeetingPage() {
     return () => {
       ws.close()
     }
-  }, [code, user?.id])
+  }, [targetCode, user?.id])
 
   // 4. Emit periodic telemetry to WebSocket (every 2 seconds)
   useEffect(() => {

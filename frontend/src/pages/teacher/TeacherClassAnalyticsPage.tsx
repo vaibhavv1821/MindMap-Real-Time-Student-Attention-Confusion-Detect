@@ -56,30 +56,30 @@ export default function TeacherClassAnalyticsPage() {
 
   const avgAttention = analytics?.overall_avg_attention && analytics.overall_avg_attention > 0
     ? Math.round(analytics.overall_avg_attention)
-    : students.length > 0
-    ? Math.round(students.reduce((acc, s) => acc + (s.avg_attention ?? 85), 0) / students.length)
-    : 85
+    : students.length > 0 && students.some((s) => s.avg_attention > 0)
+    ? Math.round(
+        students.filter((s) => s.avg_attention > 0).reduce((acc, s) => acc + s.avg_attention, 0) /
+        students.filter((s) => s.avg_attention > 0).length
+      )
+    : 0
 
   const avgConfusion = analytics?.overall_avg_confusion && analytics.overall_avg_confusion > 0
     ? Math.round(analytics.overall_avg_confusion)
-    : students.length > 0
-    ? Math.round(students.reduce((acc, s) => acc + (s.avg_confusion ?? 15), 0) / students.length)
-    : 15
+    : students.length > 0 && students.some((s) => s.avg_confusion > 0)
+    ? Math.round(
+        students.filter((s) => s.avg_confusion > 0).reduce((acc, s) => acc + s.avg_confusion, 0) /
+        students.filter((s) => s.avg_confusion > 0).length
+      )
+    : 0
 
-  // Generate trend data points based on available session telemetry
+  // Real trend data points based on recorded sessions only
   const attentionTrend = analytics?.recent_sessions && analytics.recent_sessions.length > 0
     ? analytics.recent_sessions.map((s, idx) => ({
-        label: `Session ${idx + 1}`,
-        attention: s.avg_attention > 0 ? Math.round(s.avg_attention) : avgAttention,
-        confusion: s.avg_confusion > 0 ? Math.round(s.avg_confusion) : avgConfusion,
+        label: s.class_code ? `${s.class_code} (#${idx + 1})` : `Session ${idx + 1}`,
+        attention: Math.round(s.avg_attention || 0),
+        confusion: Math.round(s.avg_confusion || 0),
       }))
-    : [
-        { label: '00m', attention: Math.min(100, avgAttention + 5), confusion: Math.max(0, avgConfusion - 5) },
-        { label: '15m', attention: avgAttention, confusion: avgConfusion },
-        { label: '30m', attention: Math.max(30, avgAttention - 12), confusion: Math.min(70, avgConfusion + 15) },
-        { label: '45m', attention: Math.min(95, avgAttention + 3), confusion: Math.max(5, avgConfusion - 3) },
-        { label: '60m', attention: avgAttention, confusion: avgConfusion },
-      ]
+    : []
 
   const handleExportPDF = () => {
     if (!classData) return
@@ -218,19 +218,27 @@ export default function TeacherClassAnalyticsPage() {
                   </Badge>
                 </div>
 
-                <div className="h-60 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={attentionTrend}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                      <XAxis dataKey="label" stroke="#64748B" fontSize={11} />
-                      <YAxis stroke="#64748B" fontSize={11} domain={[0, 100]} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderRadius: '8px', fontSize: '11px' }}
-                      />
-                      <Area type="monotone" dataKey="attention" stroke="#10B981" fill="#10B981" fillOpacity={0.2} name="Attention %" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                {attentionTrend.length === 0 ? (
+                  <div className="h-60 w-full flex flex-col items-center justify-center text-slate-400 space-y-2 border border-dashed border-slate-200 rounded-lg">
+                    <Icons.TrendingUp size={28} />
+                    <p className="text-xs font-medium text-slate-600">No session history recorded yet.</p>
+                    <p className="text-[11px] text-slate-400">Launch a live session to record aggregate attention telemetry.</p>
+                  </div>
+                ) : (
+                  <div className="h-60 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={attentionTrend}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                        <XAxis dataKey="label" stroke="#64748B" fontSize={11} />
+                        <YAxis stroke="#64748B" fontSize={11} domain={[0, 100]} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderRadius: '8px', fontSize: '11px' }}
+                        />
+                        <Area type="monotone" dataKey="attention" stroke="#10B981" fill="#10B981" fillOpacity={0.2} name="Attention %" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
               </Card>
 
               {/* Confusion Over Time */}
@@ -245,19 +253,27 @@ export default function TeacherClassAnalyticsPage() {
                   </Badge>
                 </div>
 
-                <div className="h-60 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={attentionTrend}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                      <XAxis dataKey="label" stroke="#64748B" fontSize={11} />
-                      <YAxis stroke="#64748B" fontSize={11} domain={[0, 100]} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderRadius: '8px', fontSize: '11px' }}
-                      />
-                      <Area type="monotone" dataKey="confusion" stroke="#8B5CF6" fill="#8B5CF6" fillOpacity={0.2} name="Confusion %" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                {attentionTrend.length === 0 ? (
+                  <div className="h-60 w-full flex flex-col items-center justify-center text-slate-400 space-y-2 border border-dashed border-slate-200 rounded-lg">
+                    <Icons.AlertTriangle size={28} />
+                    <p className="text-xs font-medium text-slate-600">No confusion timeline recorded yet.</p>
+                    <p className="text-[11px] text-slate-400">Fluctuations appear after live session telemetry is captured.</p>
+                  </div>
+                ) : (
+                  <div className="h-60 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={attentionTrend}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                        <XAxis dataKey="label" stroke="#64748B" fontSize={11} />
+                        <YAxis stroke="#64748B" fontSize={11} domain={[0, 100]} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8F0', borderRadius: '8px', fontSize: '11px' }}
+                        />
+                        <Area type="monotone" dataKey="confusion" stroke="#8B5CF6" fill="#8B5CF6" fillOpacity={0.2} name="Confusion %" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
               </Card>
             </div>
 
