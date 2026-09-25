@@ -5,65 +5,83 @@ import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { Icons } from '@/components/ui/Icons'
 import { useToast } from '@/components/ui/Toast'
+import { classApi, EnrollmentItem } from '@/services/classApi'
 
 export interface JoinClassroomModalProps {
   isOpen: boolean
   onClose: () => void
+  onClassJoined?: (enrollment: EnrollmentItem) => void
 }
 
-export const JoinClassroomModal = ({ isOpen, onClose }: JoinClassroomModalProps) => {
+export const JoinClassroomModal = ({ isOpen, onClose, onClassJoined }: JoinClassroomModalProps) => {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const [classCode, setClassCode] = useState('')
   const [isJoining, setIsJoining] = useState(false)
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!classCode.trim()) return
+    const cleanCode = classCode.trim().toUpperCase()
+    if (!cleanCode) return
 
     setIsJoining(true)
-    setTimeout(() => {
-      setIsJoining(false)
+    try {
+      const enrollment = await classApi.joinClass(cleanCode)
       showToast({
         type: 'success',
-        title: 'Joining Classroom...',
-        message: `Connecting to room ${classCode.toUpperCase()} with MediaPipe AI active.`,
+        title: 'Joined Successfully!',
+        message: `Enrolled in ${enrollment.class_name} (${cleanCode}).`,
       })
+
+      setClassCode('')
+      setIsJoining(false)
       onClose()
-      navigate(`/classroom/${classCode.toLowerCase()}`)
-    }, 700)
+
+      if (onClassJoined) {
+        onClassJoined(enrollment)
+      } else {
+        navigate(`/classroom/${cleanCode.toLowerCase()}`)
+      }
+    } catch (err: any) {
+      setIsJoining(false)
+      showToast({
+        type: 'danger',
+        title: 'Join Failed',
+        message: err?.message || 'Could not join classroom. Please verify the room code.',
+      })
+    }
   }
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Join Live AI Classroom"
-      description="Enter the 6-character room code provided by your instructor"
+      title="Join Classroom"
+      description="Enter the unique Room Code provided by your instructor (e.g. PHY-4821)"
     >
       <form onSubmit={handleJoin} className="space-y-4 mt-2">
         <Input
-          label="Class Code"
-          placeholder="e.g. QUANTUM-101"
+          label="Classroom Code"
+          placeholder="e.g. PHY-4821"
           value={classCode}
           onChange={(e) => setClassCode(e.target.value.toUpperCase())}
           leftIcon={<Icons.Video size={18} />}
           required
         />
 
-        <div className="p-3 rounded-xl bg-background-tertiary border border-border/60 flex items-start gap-2.5 text-xs text-muted">
-          <Icons.ShieldCheck className="text-success shrink-0 mt-0.5" size={16} />
+        <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 flex items-start gap-2.5 text-xs text-blue-700">
+          <Icons.ShieldCheck className="text-emerald-600 shrink-0 mt-0.5" size={16} />
           <span>
-            Camera feed is analyzed client-side. Only attention metrics are transmitted to instructor.
+            Camera feed is analyzed 100% client-side via MediaPipe. Only derived attention and confusion telemetry will be shared with the teacher.
           </span>
         </div>
 
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="ghost" size="sm" type="button" onClick={onClose}>
+          <Button variant="ghost" size="sm" type="button" onClick={onClose} disabled={isJoining}>
             Cancel
           </Button>
-          <Button variant="glow" size="sm" type="submit" isLoading={isJoining}>
-            Enter Classroom
+          <Button variant="primary" size="sm" type="submit" isLoading={isJoining}>
+            Join Classroom
           </Button>
         </div>
       </form>

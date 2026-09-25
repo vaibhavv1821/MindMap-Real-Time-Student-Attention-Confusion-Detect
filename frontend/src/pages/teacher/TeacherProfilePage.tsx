@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
@@ -12,6 +12,8 @@ import { useToast } from '@/components/ui/Toast'
 export default function TeacherProfilePage() {
   const { user } = useAuthContext()
   const { showToast } = useToast()
+  const [confusionThreshold, setConfusionThreshold] = useState('45')
+  const [attentionThreshold, setAttentionThreshold] = useState('40')
 
   const teacherNav = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: <Icons.Grid size={18} /> },
@@ -26,41 +28,49 @@ export default function TeacherProfilePage() {
   }
 
   return (
-    <DashboardLayout navItems={teacherNav} title="Teacher Settings & Thresholds">
+    <DashboardLayout navItems={teacherNav} title="Teacher Profile & Settings">
       <div className="max-w-3xl space-y-6">
-        <Card variant="glass" className="p-6 flex items-center gap-6">
-          <Avatar name={user?.name || 'Prof. Robert Vance'} size="xl" status="online" />
+        <Card variant="default" className="p-6 flex items-center gap-6 bg-white border-slate-200 shadow-sm">
+          <Avatar name={user?.name || 'Teacher'} size="xl" status="online" />
           <div>
-            <h2 className="text-xl font-bold text-white">{user?.name || 'Prof. Robert Vance'}</h2>
-            <p className="text-xs text-muted mt-0.5">{user?.email || 'vance@university.edu'}</p>
+            <h2 className="text-xl font-bold text-slate-900">{user?.name || 'Instructor Account'}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{user?.email || 'teacher@mindmap.edu'}</p>
             <div className="flex items-center gap-2 mt-2">
-              <Badge variant="purple" size="sm">FACULTY INSTRUCTOR</Badge>
-              <Badge variant="success" size="sm" dot font-mono>Pro Tier</Badge>
+              <Badge variant="purple" size="sm">
+                {(user?.role || 'TEACHER').toUpperCase()}
+              </Badge>
+              <Badge variant="success" size="sm" dot>
+                MongoDB Atlas Verified
+              </Badge>
             </div>
           </div>
         </Card>
 
-        <Card variant="glass" className="p-6 space-y-4">
-          <h3 className="text-base font-bold text-white mb-2">Classroom Alert Thresholds</h3>
-          
-          <Input label="Confusion Alert Sensitivity Threshold (%)" defaultValue="45" leftIcon={<Icons.AlertTriangle size={18} />} />
-          <Input label="Low Attention Warning Threshold (%)" defaultValue="40" leftIcon={<Icons.Brain size={18} />} />
+        <Card variant="default" className="p-6 space-y-4 bg-white border-slate-200 shadow-sm">
+          <h3 className="text-base font-bold text-slate-900 mb-2">Account Credentials</h3>
+          <Input label="Full Name" value={user?.name || ''} readOnly leftIcon={<Icons.User size={18} />} />
+          <Input label="Email Address" value={user?.email || ''} readOnly leftIcon={<Icons.Mail size={18} />} />
 
-          <div className="pt-4 border-t border-border/40">
-            <h3 className="text-base font-bold text-white mb-2">Notification Preferences</h3>
+          <div className="pt-4 border-t border-slate-100">
+            <h3 className="text-base font-bold text-slate-900 mb-2">Classroom Alert Thresholds</h3>
             <div className="space-y-3">
-              <label className="flex items-center justify-between p-3 rounded-xl bg-background-tertiary border border-border/60 cursor-pointer">
-                <div>
-                  <div className="text-xs font-semibold text-white">Live Audio Chime on Confusion Spike</div>
-                  <div className="text-[10px] text-muted">Play a subtle audio notification when &gt; 25% of class is confused</div>
-                </div>
-                <input type="checkbox" defaultChecked className="accent-accent h-4 w-4" />
-              </label>
+              <Input
+                label="Confusion Alert Sensitivity Threshold (%)"
+                value={confusionThreshold}
+                onChange={(e) => setConfusionThreshold(e.target.value)}
+                leftIcon={<Icons.AlertTriangle size={18} />}
+              />
+              <Input
+                label="Low Attention Warning Threshold (%)"
+                value={attentionThreshold}
+                onChange={(e) => setAttentionThreshold(e.target.value)}
+                leftIcon={<Icons.Brain size={18} />}
+              />
             </div>
           </div>
 
           <div className="flex justify-end pt-4">
-            <Button variant="glow" size="md" onClick={handleSave}>
+            <Button variant="primary" size="md" onClick={handleSave}>
               Save Teacher Settings
             </Button>
           </div>

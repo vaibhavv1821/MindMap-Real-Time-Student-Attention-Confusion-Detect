@@ -32,8 +32,17 @@ async def connect_db():
     )
     # Ping the server to verify Atlas connection
     await client.admin.command("ping")
-    # Ensure email uniqueness at the DB level — never rely on app logic alone for this.
-    await client[settings.db_name]["users"].create_index("email", unique=True)
+    db = client[settings.db_name]
+    # Ensure indexes at DB level
+    await db["users"].create_index("email", unique=True)
+    await db["classes"].create_index("class_code", unique=True)
+    await db["classes"].create_index("teacher_id")
+    await db["enrollments"].create_index([("class_id", 1), ("student_id", 1)], unique=True)
+    await db["enrollments"].create_index("student_id")
+    await db["sessions"].create_index("class_id")
+    await db["session_participants"].create_index([("session_id", 1), ("student_id", 1)])
+    await db["session_participants"].create_index("student_id")
+
 
 
 async def ping_db() -> bool:

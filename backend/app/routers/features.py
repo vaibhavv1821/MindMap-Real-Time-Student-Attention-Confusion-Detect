@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Dict, List
 from app.schemas.features import (
     FeatureExtractionRequest,
@@ -103,5 +103,39 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
             data = await websocket.receive_json()
             # Broadcast processed numerical telemetry to teacher and classroom peers
             await manager.broadcast(data, room_key)
+
+            # Persist real telemetry in MongoDB session participants if student telemetry
+            if isinstance(data, dict) and "student_id" in data:
+                try:
+                    from app.db.mongodb import get_db
+                    from datetime import datetime, timezone
+                    db = get_db()
+                    now = datetime.now(timezone.utc)
+                    code_clean = class_code.strip().upper()
+                    active_session = await db["sessions"].find_one({
+                        "class_code": code_clean,
+                        "status": "LIVE"
+                    })
+                    if active_session:
+                        s_id = str(active_session["_id"])
+                        await db["session_participants"].update_one(
+                            {"session_id": s_id, "student_id": str(data["student_id"])},
+                            {
+                                "$set": {
+                                    "avg_attention": float(data.get("attention_score", 0)),
+                                    "avg_confusion": float(data.get("confusion_score", 0)),
+                                    "student_name": data.get("student_name", "Student"),
+                                    "student_email": data.get("student_email", ""),
+                                    "status": "PRESENT"
+                                },
+                                "$setOnInsert": {
+                                    "joined_at": now,
+                                    "class_id": active_session["class_id"]
+                                }
+                            },
+                            upsert=True
+                        )
+                except Exception:
+                    pass
     except WebSocketDisconnect:
         manager.disconnect(websocket, room_key)

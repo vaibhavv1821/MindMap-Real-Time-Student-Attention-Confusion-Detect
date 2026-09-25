@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db.mongodb import connect_db, close_db
-from app.routers import auth, features, ml
+from app.routers import auth, features, ml, classes
 
 logger = logging.getLogger("mindmap.api")
 
@@ -47,8 +47,24 @@ app.add_middleware(
 # Mount Routers
 app.include_router(auth.router)
 app.include_router(auth.router, prefix="/api")
+app.include_router(classes.router)
+app.include_router(classes.router, prefix="/api")
 app.include_router(features.router)
 app.include_router(ml.router)
+
+# Root Endpoint
+@app.get("/")
+async def root():
+    return {
+        "status": "OK",
+        "system": "MindMap ~ Real-Time Student Attention & Confusion Detector",
+        "version": "1.0.0",
+        "documentation": "/docs",
+        "health": "/health",
+        "database": settings.db_name,
+        "phase": "Full-Stack Production Release",
+    }
+
 
 # Health & Privacy Guarantees
 @app.get("/health")
@@ -99,3 +115,9 @@ async def top_level_ws(websocket: WebSocket):
             })
     except WebSocketDisconnect:
         pass
+
+
+@app.websocket("/ws/{class_code}")
+async def top_level_class_ws(websocket: WebSocket, class_code: str):
+    from app.routers.features import websocket_telemetry_endpoint
+    await websocket_telemetry_endpoint(websocket, class_code)

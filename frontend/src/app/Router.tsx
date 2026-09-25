@@ -1,5 +1,7 @@
-import { Routes, Route } from 'react-router-dom'
+import React from 'react'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from '@/app/Layout'
+import { useAuthContext } from '@/context/AuthContext'
 
 // Landing & Auth Pages
 import LandingPage from '@/pages/landing/LandingPage'
@@ -36,6 +38,38 @@ import AdminSettingsPage from '@/pages/admin/AdminSettingsPage'
 // Error Pages
 import NotFoundPage from '@/pages/errors/NotFoundPage'
 
+interface ProtectedRouteProps {
+  children: React.ReactNode
+  allowedRoles?: ('teacher' | 'student' | 'admin')[]
+}
+
+function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
+  const { user, isAuthenticated, isLoading } = useAuthContext()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-slate-950 text-white">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+          <p className="text-xs text-slate-400">Verifying session...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated || !user) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (allowedRoles && !allowedRoles.includes(user.role as any)) {
+    if (user.role === 'teacher') return <Navigate to="/teacher/dashboard" replace />
+    if (user.role === 'student') return <Navigate to="/student/dashboard" replace />
+    return <Navigate to="/login" replace />
+  }
+
+  return <>{children}</>
+}
+
 export default function Router() {
   return (
     <Routes>
@@ -50,30 +84,109 @@ export default function Router() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
 
-        {/* Student Portal */}
-        <Route path="/student/dashboard" element={<StudentDashboard />} />
-        <Route path="/student/classes" element={<StudentClassesPage />} />
-        <Route path="/student/attendance" element={<StudentAttendancePage />} />
-        <Route path="/student/reports" element={<StudentReportsPage />} />
-        <Route path="/student/profile" element={<StudentProfilePage />} />
+        {/* Student Portal (Protected for Students) */}
+        <Route
+          path="/student/dashboard"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/classes"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentClassesPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/attendance"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentAttendancePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/reports"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentReportsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student/profile"
+          element={
+            <ProtectedRoute allowedRoles={['student', 'admin']}>
+              <StudentProfilePage />
+            </ProtectedRoute>
+          }
+        />
 
-        {/* Teacher Portal */}
-        <Route path="/teacher/dashboard" element={<TeacherDashboard />} />
-        <Route path="/teacher/classrooms" element={<ManageClassroomsPage />} />
-        <Route path="/teacher/analytics" element={<TeacherAnalyticsPage />} />
-        <Route path="/teacher/reports" element={<TeacherReportsPage />} />
-        <Route path="/teacher/settings" element={<TeacherProfilePage />} />
+        {/* Teacher Portal (Protected for Teachers) */}
+        <Route
+          path="/teacher/dashboard"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/classrooms"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <ManageClassroomsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/analytics"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherAnalyticsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/reports"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherReportsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teacher/settings"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+              <TeacherProfilePage />
+            </ProtectedRoute>
+          }
+        />
 
-        {/* Live AI Classroom Room */}
-        <Route path="/classroom/:code" element={<ClassroomMeetingPage />} />
-        <Route path="/classroom/demo" element={<ClassroomMeetingPage />} />
+        {/* Live AI Classroom Room (Authenticated) */}
+        <Route
+          path="/classroom/:code"
+          element={
+            <ProtectedRoute allowedRoles={['teacher', 'student', 'admin']}>
+              <ClassroomMeetingPage />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Admin Panel */}
-        <Route path="/admin/dashboard" element={<AdminDashboard />} />
-        <Route path="/admin/teachers" element={<TeacherManagementPage />} />
-        <Route path="/admin/students" element={<StudentManagementPage />} />
-        <Route path="/admin/logs" element={<SystemLogsPage />} />
-        <Route path="/admin/settings" element={<AdminSettingsPage />} />
+        <Route
+          path="/admin/*"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Fallback 404 */}
         <Route path="*" element={<NotFoundPage />} />

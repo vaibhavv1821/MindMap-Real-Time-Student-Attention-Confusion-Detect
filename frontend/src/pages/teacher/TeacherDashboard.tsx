@@ -1,68 +1,35 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Input } from '@/components/ui/Input'
 import { Avatar } from '@/components/ui/Avatar'
-import { Modal } from '@/components/ui/Modal'
 import { Icons } from '@/components/ui/Icons'
+import { useAuthContext } from '@/context/AuthContext'
+import { useToast } from '@/components/ui/Toast'
+import { classApi, ClassItem, StudentRoster } from '@/services/classApi'
 import { CreateClassroomModal } from './CreateClassroomModal'
 import { generateSessionPDFReport } from './PDFReportExporter'
-import {
-  classroomSimulator,
-  SimulatedStudent,
-  ClassroomSummaryStats,
-} from '@/services/classroomSimulator'
-import { useToast } from '@/components/ui/Toast'
+import { env } from '@/config/env'
 
 export default function TeacherDashboard() {
+  const { user } = useAuthContext()
   const { showToast } = useToast()
+  const [classes, setClasses] = useState<ClassItem[]>([])
+  const [selectedClass, setSelectedClass] = useState<ClassItem | null>(null)
+  const [students, setStudents] = useState<StudentRoster[]>([])
+  const [isLoading, setIsLoading] = useState(true)
   const [isCreateModalOpen, setCreateModalOpen] = useState(false)
-  const [selectedStudent, setSelectedStudent] = useState<SimulatedStudent | null>(null)
+  const [selectedStudent, setSelectedStudent] = useState<StudentRoster | null>(null)
 
-  // Simulation State
-  const [students, setStudents] = useState<SimulatedStudent[]>([])
-  const [stats, setStats] = useState<ClassroomSummaryStats>({
-    totalStudents: 15,
-    avgAttention: 84,
-    avgConfusion: 14,
-    focusedCount: 10,
-    moderateCount: 3,
-    lowFocusCount: 2,
-    confusedCount: 3,
-    handRaisedCount: 2,
-    onlineCount: 14,
-  })
-
-  // Filtering & Sorting State
+  // Filters & Search
   const [searchQuery, setSearchQuery] = useState('')
   const [filterTab, setFilterTab] = useState<'ALL' | 'FOCUSED' | 'MODERATE' | 'LOW' | 'CONFUSED' | 'HAND'>('ALL')
   const [sortBy, setSortBy] = useState<'ATTENTION_ASC' | 'ATTENTION_DESC' | 'CONFUSION_DESC' | 'NAME'>('ATTENTION_ASC')
 
-  useEffect(() => {
-    const unsubscribe = classroomSimulator.subscribe((newStudents, newStats) => {
-      setStudents(newStudents)
-      setStats(newStats)
-
-      if (selectedStudent) {
-        const updated = newStudents.find((s) => s.id === selectedStudent.id)
-        if (updated) setSelectedStudent(updated)
-      }
-    })
-
-    return () => unsubscribe()
-  }, [selectedStudent])
+  const wsRef = useRef<WebSocket | null>(null)
 
   const teacherNav = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: <Icons.Grid size={18} /> },
@@ -72,24 +39,122 @@ export default function TeacherDashboard() {
     { label: 'Settings', path: '/teacher/settings', icon: <Icons.Settings size={18} /> },
   ]
 
+  // Load teacher classes
+  const loadClasses = async () => {
+    try {
+      const data = await classApi.getTeacherClasses()
+      setClasses(data)
+      if (data.length > 0) {
+        // Prefer LIVE class if exists, else first class
+        const live = data.find((c) => c.status === 'LIVE') || data[0]
+        setSelectedClass(live)
+      } else {
+        setSelectedClass(null)
+      }
+    } catch (err: any) {
+      showToast({
+        type: 'danger',
+        title: 'Error',
+        message: err?.message || 'Could not load classes.',
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadClasses()
+  }, [])
+
+  // When selected class changes, load roster and connect WebSocket
+  useEffect(() => {
+    if (!selectedClass) {
+      setStudents([])
+      return
+    }
+
+    // Load initial roster from MongoDB
+    classApi
+      .getClassStudents(selectedClass.id)
+      .then((roster) => setStudents(roster))
+      .catch(() => {})
+
+    // Connect to WebSocket for this classroom code
+    const wsUrl = `${env.wsBaseUrl}/${selectedClass.class_code}`
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data)
+        if (payload && payload.student_id) {
+          setStudents((prev) => {
+            const index = prev.findIndex((s) => s.student_id === payload.student_id)
+            const updatedItem: StudentRoster = {
+              student_id: payload.student_id,
+              name: payload.student_name || 'Student',
+              email: payload.student_email || '',
+              enrolled_at: payload.timestamp_ms ? new Date(payload.timestamp_ms).toLocaleTimeString() : 'Just now',
+              status: 'ACTIVE',
+              avg_attention: payload.attention_score ?? 85,
+              avg_confusion: payload.confusion_score ?? 15,
+              connection_status: payload.connection_status || 'ONLINE',
+              is_hand_raised: !!payload.is_hand_raised,
+            }
+
+            if (index >= 0) {
+              const copy = [...prev]
+              copy[index] = { ...copy[index], ...updatedItem }
+              return copy
+            } else {
+              return [updatedItem, ...prev]
+            }
+          })
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [selectedClass?.id, selectedClass?.class_code])
+
+  // Calculate real classroom summary stats from actual students
+  const totalStudents = students.length
+  const onlineCount = students.filter((s) => s.connection_status === 'ONLINE').length
+  const avgAttention =
+    totalStudents > 0
+      ? Math.round(students.reduce((acc, s) => acc + (s.avg_attention || 0), 0) / totalStudents)
+      : selectedClass?.avg_attention || 0
+  const avgConfusion =
+    totalStudents > 0
+      ? Math.round(students.reduce((acc, s) => acc + (s.avg_confusion || 0), 0) / totalStudents)
+      : selectedClass?.avg_confusion || 0
+  const focusedCount = students.filter((s) => s.avg_attention >= 70).length
+  const confusedCount = students.filter((s) => s.avg_confusion >= 50).length
+  const handRaisedCount = students.filter((s) => s.is_hand_raised).length
+
   const handleExportPDF = () => {
+    if (!selectedClass) return
     generateSessionPDFReport({
-      className: 'Quantum Physics 101',
-      classCode: 'QUANTUM-101',
-      instructor: 'Prof. Robert Vance',
+      className: selectedClass.name,
+      classCode: selectedClass.class_code,
+      instructor: selectedClass.teacher_name,
       date: new Date().toLocaleDateString(),
-      totalStudents: stats.totalStudents,
-      avgAttention: stats.avgAttention,
-      avgConfusion: stats.avgConfusion,
+      totalStudents: totalStudents,
+      avgAttention: avgAttention,
+      avgConfusion: avgConfusion,
       students: students.map((s) => ({
         name: s.name,
         email: s.email,
-        attention: s.attentionScore,
-        confusion: s.confusionScore,
-        status: s.connectionStatus === 'ONLINE' ? 'Present' : 'Absent',
+        attention: s.avg_attention,
+        confusion: s.avg_confusion,
+        status: s.connection_status === 'ONLINE' ? 'Present' : 'Offline',
       })),
     })
-    showToast({ type: 'success', title: 'Report Downloaded', message: 'Session PDF report exported successfully.' })
+    showToast({ type: 'success', title: 'Report Downloaded', message: 'Real session PDF exported successfully.' })
   }
 
   // Filter & Sort Logic
@@ -100,261 +165,223 @@ export default function TeacherDashboard() {
         s.email.toLowerCase().includes(searchQuery.toLowerCase())
       if (!matchesSearch) return false
 
-      if (filterTab === 'FOCUSED') return s.status === 'FOCUSED'
-      if (filterTab === 'MODERATE') return s.status === 'MODERATE'
-      if (filterTab === 'LOW') return s.status === 'LOW_FOCUS'
-      if (filterTab === 'CONFUSED') return s.status === 'CONFUSED' || s.confusionScore > 50
-      if (filterTab === 'HAND') return s.isHandRaised
+      if (filterTab === 'FOCUSED') return s.avg_attention >= 70
+      if (filterTab === 'MODERATE') return s.avg_attention >= 40 && s.avg_attention < 70
+      if (filterTab === 'LOW') return s.avg_attention < 40
+      if (filterTab === 'CONFUSED') return s.avg_confusion >= 50
+      if (filterTab === 'HAND') return s.is_hand_raised
       return true
     })
     .sort((a, b) => {
-      if (sortBy === 'ATTENTION_ASC') return a.attentionScore - b.attentionScore
-      if (sortBy === 'ATTENTION_DESC') return b.attentionScore - a.attentionScore
-      if (sortBy === 'CONFUSION_DESC') return b.confusionScore - a.confusionScore
+      if (sortBy === 'ATTENTION_ASC') return a.avg_attention - b.avg_attention
+      if (sortBy === 'ATTENTION_DESC') return b.avg_attention - a.avg_attention
+      if (sortBy === 'CONFUSION_DESC') return b.avg_confusion - a.avg_confusion
       return a.name.localeCompare(b.name)
     })
 
   return (
     <DashboardLayout navItems={teacherNav} title="Classroom Dashboard">
-      {/* 1. Header & Actions */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+      {/* 1. Header & Class Switcher */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-sm mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Live Classroom</span>
-            <Badge variant="success" size="sm" dot>
-              QUANTUM-101
-            </Badge>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Teacher Portal</span>
+            {selectedClass ? (
+              <Badge variant={selectedClass.status === 'LIVE' ? 'live' : 'purple'} size="sm" dot={selectedClass.status === 'LIVE'}>
+                {selectedClass.class_code} ({selectedClass.status})
+              </Badge>
+            ) : (
+              <Badge variant="default" size="sm">No Class Selected</Badge>
+            )}
           </div>
-          <h2 className="text-xl font-bold text-slate-900">Quantum Physics 101</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Instructor: Prof. Robert Vance • 15 Enrolled Students</p>
+          <h2 className="text-xl font-bold text-slate-900">
+            {selectedClass ? selectedClass.name : 'Welcome, Instructor'}
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Instructor: {user?.name || selectedClass?.teacher_name || 'Teacher'} • {totalStudents} Enrolled / Connected
+          </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)} leftIcon={<Icons.Plus size={16} />}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {classes.length > 1 && (
+            <select
+              value={selectedClass?.id || ''}
+              onChange={(e) => {
+                const found = classes.find((c) => c.id === e.target.value)
+                if (found) setSelectedClass(found)
+              }}
+              className="text-xs font-medium border border-slate-300 rounded-lg px-3 py-1.5 bg-white text-slate-800"
+            >
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.class_code}) - {c.status}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {selectedClass && selectedClass.status === 'LIVE' && (
+            <Link to={`/classroom/${selectedClass.class_code.toLowerCase()}`}>
+              <Button variant="primary" size="sm" leftIcon={<Icons.Video size={15} />}>
+                Enter Live Room
+              </Button>
+            </Link>
+          )}
+
+          <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)} leftIcon={<Icons.Plus size={15} />}>
             New Class
           </Button>
-          <Button variant="primary" size="sm" onClick={handleExportPDF} leftIcon={<Icons.Download size={16} />}>
+          <Button variant="outline" size="sm" onClick={handleExportPDF} leftIcon={<Icons.Download size={15} />} disabled={!selectedClass}>
             Export PDF
           </Button>
         </div>
       </div>
 
-      {/* 2. Simple 4-Metric Summary Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card variant="default" className="p-4">
-          <div className="text-xs font-medium text-slate-500">Class Average Attention</div>
-          <div className="text-2xl font-bold text-emerald-600 mt-1">{stats.avgAttention}%</div>
-          <span className="text-[11px] text-slate-500">Target $\ge 75\%$</span>
-        </Card>
-
-        <Card variant="default" className="p-4">
-          <div className="text-xs font-medium text-slate-500">Connected Students</div>
-          <div className="text-2xl font-bold text-slate-900 mt-1">{stats.onlineCount} / {stats.totalStudents}</div>
-          <span className="text-[11px] text-emerald-600 font-medium">14 Active</span>
-        </Card>
-
-        <Card variant="default" className="p-4">
-          <div className="text-xs font-medium text-slate-500">Low Attention (&lt; 40%)</div>
-          <div className="text-2xl font-bold text-red-600 mt-1">{stats.lowFocusCount}</div>
-          <span className="text-[11px] text-red-600 font-medium">Requires Attention</span>
-        </Card>
-
-        <Card variant="default" className="p-4">
-          <div className="text-xs font-medium text-slate-500">Confusion Spikes</div>
-          <div className="text-2xl font-bold text-amber-600 mt-1">{stats.confusedCount}</div>
-          <span className="text-[11px] text-amber-700 font-medium">Section Clarification</span>
-        </Card>
-      </div>
-
-      {/* 3. Live Classroom Student Roster Table */}
-      <Card variant="default" className="p-5 space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">Live Classroom Students</h3>
-            <p className="text-xs text-slate-500">Real-time student focus levels derived in-browser</p>
+      {isLoading ? (
+        <div className="flex h-48 items-center justify-center">
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+        </div>
+      ) : !selectedClass ? (
+        <Card variant="default" className="p-12 text-center bg-white border-slate-200">
+          <Icons.Brain size={40} className="mx-auto text-slate-400 mb-3" />
+          <h3 className="text-base font-bold text-slate-800">No Classroom Selected</h3>
+          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+            You don't have any classes created yet. Create a class to view real-time student attention and confusion telemetry.
+          </p>
+          <div className="mt-4">
+            <Button variant="primary" size="sm" onClick={() => setCreateModalOpen(true)} leftIcon={<Icons.Plus size={16} />}>
+              Create Classroom
+            </Button>
           </div>
-
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="Filter by name..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-44 text-xs"
-            />
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-700 focus:outline-none focus:border-blue-500"
-            >
-              <option value="ATTENTION_ASC">Sort: Low Attention First</option>
-              <option value="ATTENTION_DESC">Sort: High Attention First</option>
-              <option value="CONFUSION_DESC">Sort: High Confusion First</option>
-              <option value="NAME">Sort: Name (A-Z)</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Filter Tabs */}
-        <div className="flex items-center gap-2 border-b border-slate-200 pb-2 text-xs font-medium text-slate-600">
-          {[
-            { id: 'ALL', label: `All (${students.length})` },
-            { id: 'FOCUSED', label: `Focused (${stats.focusedCount})` },
-            { id: 'MODERATE', label: `Moderate (${stats.moderateCount})` },
-            { id: 'LOW', label: `Low Focus (${stats.lowFocusCount})` },
-            { id: 'CONFUSED', label: `Confused (${stats.confusedCount})` },
-            { id: 'HAND', label: `Hand Raised (${stats.handRaisedCount})` },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setFilterTab(tab.id as any)}
-              className={`px-3 py-1 rounded-md transition-colors ${
-                filterTab === tab.id
-                  ? 'bg-blue-50 text-blue-700 font-semibold'
-                  : 'hover:bg-slate-100 text-slate-600'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Minimal Clean Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-left text-slate-600">
-            <thead className="bg-slate-50 text-slate-700 font-semibold uppercase text-[10px] border-b border-slate-200">
-              <tr>
-                <th className="py-2.5 px-3">Student</th>
-                <th className="py-2.5 px-3">Attention Score</th>
-                <th className="py-2.5 px-3">Confusion Score</th>
-                <th className="py-2.5 px-3">Status</th>
-                <th className="py-2.5 px-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {filteredStudents.map((s) => (
-                <tr
-                  key={s.id}
-                  onClick={() => setSelectedStudent(s)}
-                  className="hover:bg-slate-50 cursor-pointer transition-colors"
-                >
-                  <td className="py-3 px-3">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={s.name} size="sm" />
-                      <div>
-                        <div className="font-semibold text-slate-900 flex items-center gap-1.5">
-                          <span>{s.name}</span>
-                          {s.isHandRaised && <Icons.Hand size={14} className="text-amber-600" />}
-                        </div>
-                        <div className="text-[11px] text-slate-400">{s.email}</div>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="py-3 px-3">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`font-semibold font-mono text-xs ${
-                          s.attentionScore >= 70
-                            ? 'text-emerald-700'
-                            : s.attentionScore >= 40
-                            ? 'text-amber-700'
-                            : 'text-red-700'
-                        }`}
-                      >
-                        {s.attentionScore}%
-                      </span>
-                      <div className="w-20 bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${
-                            s.attentionScore >= 70
-                              ? 'bg-emerald-600'
-                              : s.attentionScore >= 40
-                              ? 'bg-amber-500'
-                              : 'bg-red-600'
-                          }`}
-                          style={{ width: `${s.attentionScore}%` }}
-                        />
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="py-3 px-3 font-mono font-medium text-slate-700">{s.confusionScore}%</td>
-
-                  <td className="py-3 px-3">
-                    <Badge
-                      variant={
-                        s.status === 'FOCUSED'
-                          ? 'success'
-                          : s.status === 'MODERATE'
-                          ? 'warning'
-                          : 'danger'
-                      }
-                      size="sm"
-                    >
-                      {s.status}
-                    </Badge>
-                  </td>
-
-                  <td className="py-3 px-3 text-right">
-                    <button className="text-blue-600 hover:text-blue-800 font-medium">Inspect</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      {/* Student Inspector Modal */}
-      {selectedStudent && (
-        <Modal
-          isOpen={!!selectedStudent}
-          onClose={() => setSelectedStudent(null)}
-          title={`Student Telemetry: ${selectedStudent.name}`}
-          maxWidth="md"
-        >
-          <div className="space-y-4">
-            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
-              <div className="flex items-center gap-3">
-                <Avatar name={selectedStudent.name} size="md" />
-                <div>
-                  <div className="font-bold text-slate-900 text-sm">{selectedStudent.name}</div>
-                  <div className="text-xs text-slate-500">{selectedStudent.email}</div>
-                </div>
-              </div>
-              <Badge
-                variant={selectedStudent.attentionScore >= 70 ? 'success' : 'danger'}
-                size="md"
-              >
-                {selectedStudent.attentionScore}% Attention
-              </Badge>
-            </div>
-
-            <Card variant="bordered" className="p-3">
-              <h5 className="text-xs font-semibold text-slate-700 mb-2">Attention History</h5>
-              <div className="h-36 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={selectedStudent.history.map((score, i) => ({ step: `t-${7 - i}`, score }))}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                    <XAxis dataKey="step" stroke="#64748B" fontSize={10} />
-                    <YAxis stroke="#64748B" fontSize={10} domain={[0, 100]} />
-                    <Tooltip />
-                    <Area type="monotone" dataKey="score" stroke="#2563EB" fill="#2563EB" fillOpacity={0.1} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+        </Card>
+      ) : (
+        <>
+          {/* 2. Real Metrics Bar */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <Card variant="default" className="p-4 bg-white border-slate-200 shadow-sm">
+              <div className="text-xs font-medium text-slate-500">Average Attention</div>
+              <div className="text-2xl font-bold text-emerald-600 mt-1">{avgAttention}%</div>
+              <span className="text-[11px] text-slate-500">Live AI Feature Vector</span>
             </Card>
 
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" size="sm" onClick={() => setSelectedStudent(null)}>
-                Close
-              </Button>
-            </div>
+            <Card variant="default" className="p-4 bg-white border-slate-200 shadow-sm">
+              <div className="text-xs font-medium text-slate-500">Average Confusion</div>
+              <div className={`text-2xl font-bold mt-1 ${avgConfusion > 30 ? 'text-amber-500' : 'text-slate-800'}`}>
+                {avgConfusion}%
+              </div>
+              <span className="text-[11px] text-slate-500">{confusedCount} student(s) confused</span>
+            </Card>
+
+            <Card variant="default" className="p-4 bg-white border-slate-200 shadow-sm">
+              <div className="text-xs font-medium text-slate-500">Students Present</div>
+              <div className="text-2xl font-bold text-blue-600 mt-1">{onlineCount} / {totalStudents}</div>
+              <span className="text-[11px] text-slate-500">MongoDB Enrolled</span>
+            </Card>
+
+            <Card variant="default" className="p-4 bg-white border-slate-200 shadow-sm">
+              <div className="text-xs font-medium text-slate-500">Hands Raised</div>
+              <div className="text-2xl font-bold text-purple-600 mt-1">{handRaisedCount}</div>
+              <span className="text-[11px] text-slate-500">Immediate assistance</span>
+            </Card>
           </div>
-        </Modal>
+
+          {/* 3. Real Student Telemetry Roster */}
+          <Card variant="default" className="p-5 bg-white border-slate-200 shadow-sm">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Enrolled Student Telemetry</h3>
+                <p className="text-xs text-slate-500">Real-time Attention & Confusion from client-side MediaPipe inference</p>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Input
+                  placeholder="Search students..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  leftIcon={<Icons.Search size={14} />}
+                  className="w-full sm:w-48 text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-1.5 py-3 overflow-x-auto text-xs font-medium">
+              {[
+                { id: 'ALL', label: `All (${students.length})` },
+                { id: 'FOCUSED', label: `Focused (${focusedCount})` },
+                { id: 'CONFUSED', label: `Confused (${confusedCount})` },
+                { id: 'HAND', label: `Hands Raised (${handRaisedCount})` },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setFilterTab(tab.id as any)}
+                  className={`px-3 py-1 rounded-lg border transition-colors ${
+                    filterTab === tab.id
+                      ? 'bg-blue-50 text-blue-700 border-blue-200 font-semibold'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Student List */}
+            {filteredStudents.length === 0 ? (
+              <div className="text-center py-10 text-slate-400 text-xs">
+                {students.length === 0
+                  ? `No students have joined ${selectedClass.class_code} yet. Share the code with students to start receiving telemetry.`
+                  : 'No students match the selected filter.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {filteredStudents.map((s) => (
+                  <div
+                    key={s.student_id}
+                    onClick={() => setSelectedStudent(s)}
+                    className="py-3 flex items-center justify-between hover:bg-slate-50 px-2 rounded-lg cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Avatar name={s.name} size="sm" status={s.connection_status === 'ONLINE' ? 'online' : 'offline'} />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-800">{s.name}</span>
+                          {s.is_hand_raised && (
+                            <Badge variant="purple" size="sm">Hand Raised</Badge>
+                          )}
+                          <Badge variant={s.connection_status === 'ONLINE' ? 'success' : 'default'} size="sm">
+                            {s.connection_status}
+                          </Badge>
+                        </div>
+                        <span className="text-[11px] text-slate-400">{s.email || 'Student Account'}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <div className="text-xs font-bold text-emerald-600">{s.avg_attention}%</div>
+                        <span className="text-[10px] text-slate-400">Attention</span>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-xs font-bold ${s.avg_confusion > 30 ? 'text-amber-500' : 'text-slate-700'}`}>
+                          {s.avg_confusion}%
+                        </div>
+                        <span className="text-[10px] text-slate-400">Confusion</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
       )}
 
-      <CreateClassroomModal isOpen={isCreateModalOpen} onClose={() => setCreateModalOpen(false)} />
+      <CreateClassroomModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onClassCreated={() => loadClasses()}
+      />
     </DashboardLayout>
   )
 }

@@ -12,12 +12,28 @@ import { useToast } from '@/components/ui/Toast'
 import { AIDetectorService, AIMetrics } from '@/services/aiDetector'
 import { FaceMeshFeatureExtractor } from '@/services/faceMeshExtractor'
 import { TemporalFeatureAggregator, MLPredictionResult } from '@/services/temporalAnalyzer'
+import { classApi, ClassItem } from '@/services/classApi'
+import { env } from '@/config/env'
+
+interface PeerStudent {
+  id: string
+  name: string
+  email: string
+  attentionScore: number
+  confusionScore: number
+  isHandRaised: boolean
+  connectionStatus: string
+  lastSeen: number
+}
 
 export default function ClassroomMeetingPage() {
   const { code } = useParams()
   const navigate = useNavigate()
   const { user } = useAuthContext()
   const { showToast } = useToast()
+
+  const [classInfo, setClassInfo] = useState<ClassItem | null>(null)
+  const [peers, setPeers] = useState<PeerStudent[]>([])
 
   const [isMicOn, setIsMicOn] = useState(true)
   const [isCameraOn, setIsCameraOn] = useState(true)
@@ -27,9 +43,8 @@ export default function ClassroomMeetingPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Chat state
-  const [chatMessages, setChatMessages] = useState([
-    { id: '1', sender: 'Prof. Vance', text: 'Welcome everyone! Today we discuss wave functions.', time: '10:01 AM', isTeacher: true },
-    { id: '2', sender: 'Alex Johnson', text: 'Does this apply to multi-electron atoms?', time: '10:04 AM', isTeacher: false },
+  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: string; text: string; time: string; isTeacher: boolean }>>([
+    { id: '1', sender: 'MindMap System', text: 'Classroom session initialized. Facial focus & confusion telemetry active.', time: 'System', isTeacher: true },
   ])
   const [newMessage, setNewMessage] = useState('')
 
@@ -43,7 +58,7 @@ export default function ClassroomMeetingPage() {
     confusion_score: 14,
     confidence: 94,
     reasons: [
-      'Stable screen gaze (92% center focus)',
+      'Stable screen gaze (center focus)',
       'Low head movement (steady posture)',
       'Normal blink dynamics',
     ],
@@ -109,7 +124,20 @@ export default function ClassroomMeetingPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const aiServiceRef = useRef<AIDetectorService | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
 
+  // 1. Fetch real class metadata from MongoDB
+  useEffect(() => {
+    if (!code) return
+    classApi
+      .getClassDetails(code)
+      .then((data) => setClassInfo(data))
+      .catch(() => {
+        showToast({ type: 'warning', title: 'Live Session', message: `Connected to classroom: ${code.toUpperCase()}` })
+      })
+  }, [code])
+
+  // 2. Start local MediaPipe FaceMesh & AI Telemetry Engine
   useEffect(() => {
     aiServiceRef.current = new AIDetectorService()
     if (videoRef.current && canvasRef.current) {
@@ -124,6 +152,79 @@ export default function ClassroomMeetingPage() {
       }
     }
   }, [])
+
+  // 3. Connect to WebSocket room and stream telemetry
+  useEffect(() => {
+    if (!code) return
+    const wsUrl = `${env.wsBaseUrl}/${code}`
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      console.log(`[MindMap] Connected to classroom WebSocket: ${code}`)
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data)
+        if (payload && payload.student_id && payload.student_id !== user?.id) {
+          setPeers((prev) => {
+            const idx = prev.findIndex((p) => p.id === payload.student_id)
+            const item: PeerStudent = {
+              id: payload.student_id,
+              name: payload.student_name || 'Student',
+              email: payload.student_email || '',
+              attentionScore: payload.attention_score ?? 85,
+              confusionScore: payload.confusion_score ?? 15,
+              isHandRaised: !!payload.is_hand_raised,
+              connectionStatus: payload.connection_status || 'ONLINE',
+              lastSeen: Date.now(),
+            }
+            if (idx >= 0) {
+              const copy = [...prev]
+              copy[idx] = item
+              return copy
+            } else {
+              return [...prev, item]
+            }
+          })
+        }
+      } catch {
+        // ignore malformed message
+      }
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [code, user?.id])
+
+  // 4. Emit periodic telemetry to WebSocket (every 2 seconds)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        wsRef.current.send(
+          JSON.stringify({
+            student_id: user.id,
+            student_name: user.name,
+            student_email: user.email,
+            attention_score: metrics.attentionScore,
+            confusion_score: metrics.confusionScore,
+            attention_state: metrics.mlPrediction.attention_state,
+            confusion_state: metrics.mlPrediction.confusion_state,
+            confidence: metrics.mlPrediction.confidence,
+            reasons: metrics.mlPrediction.reasons,
+            indicators: metrics.behaviouralIndicators,
+            is_hand_raised: isHandRaised,
+            connection_status: isCameraOn ? 'ONLINE' : 'CAMERA_MUTED',
+            timestamp_ms: Date.now(),
+          })
+        )
+      }
+    }, 2000)
+
+    return () => clearInterval(timer)
+  }, [user, metrics, isHandRaised, isCameraOn])
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault()
@@ -141,18 +242,24 @@ export default function ClassroomMeetingPage() {
     setNewMessage('')
   }
 
-  const handleLeave = () => {
-    showToast({ type: 'info', title: 'Left Session', message: 'You disconnected from the classroom.' })
+  const handleLeave = async () => {
+    if (user?.role === 'teacher' && classInfo) {
+      try {
+        await classApi.endClass(classInfo.id)
+        showToast({ type: 'info', title: 'Class Ended', message: 'You concluded the live session.' })
+      } catch {
+        // fallback
+      }
+    } else {
+      showToast({ type: 'info', title: 'Left Session', message: 'You disconnected from the classroom.' })
+    }
     navigate(user?.role === 'teacher' ? '/teacher/dashboard' : '/student/dashboard')
   }
 
-  const studentsList = [
-    { name: user?.name || 'Alex Johnson (You)', attention: metrics.attentionScore, confusion: metrics.confusionScore, hand: isHandRaised },
-    { name: 'Sarah Miller', attention: 88, confusion: 12, hand: false },
-    { name: 'David Clark', attention: 42, confusion: 65, hand: true },
-    { name: 'Emma Watson', attention: 96, confusion: 4, hand: false },
-    { name: 'Liam Brown', attention: 78, confusion: 20, hand: false },
-  ]
+  const isTeacher = user?.role === 'teacher'
+  const classroomTitle = classInfo?.name || 'Live AI Classroom'
+  const roomCode = classInfo?.class_code || code?.toUpperCase() || 'ROOM'
+  const instructorName = classInfo?.teacher_name || (isTeacher ? user?.name : 'Faculty Instructor')
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden flex-col">
@@ -164,16 +271,16 @@ export default function ClassroomMeetingPage() {
           </div>
           <div>
             <h1 className="text-sm font-bold text-white flex items-center gap-2">
-              <span>Quantum Physics 101</span>
-              <Badge variant="info" size="sm">{code?.toUpperCase() || 'QUANTUM-101'}</Badge>
+              <span>{classroomTitle}</span>
+              <Badge variant="purple" size="sm" className="font-mono">{roomCode}</Badge>
             </h1>
-            <span className="text-[11px] text-slate-400">Prof. Robert Vance • Live Classroom Session</span>
+            <span className="text-[11px] text-slate-400">{instructorName} • Live Session</span>
           </div>
         </div>
 
         {/* Live Metrics Summary */}
         <div className="hidden md:flex items-center gap-3 px-3 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-medium">
-          <span className="text-slate-300">Class Attention: <strong className="text-emerald-400">{metrics.attentionScore}%</strong></span>
+          <span className="text-slate-300">My Attention: <strong className="text-emerald-400">{metrics.attentionScore}%</strong></span>
           <span className="text-slate-600">|</span>
           <span className="text-slate-300">Confusion: <strong className="text-purple-300">{metrics.confusionScore}%</strong></span>
           <span className="text-slate-600">|</span>
@@ -190,7 +297,7 @@ export default function ClassroomMeetingPage() {
             {sidebarOpen ? 'Hide Panel' : 'Show Panel'}
           </button>
           <Button variant="danger" size="sm" onClick={handleLeave} leftIcon={<Icons.PhoneOff size={15} />}>
-            Leave Session
+            {isTeacher ? 'End Session' : 'Leave Session'}
           </Button>
         </div>
       </header>
@@ -199,20 +306,21 @@ export default function ClassroomMeetingPage() {
       <div className="flex-1 flex min-h-0 relative">
         {/* Video Stage Grid */}
         <div className="flex-1 p-4 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-y-auto">
-          {/* Main Teacher Spotlight Tile */}
+          {/* Main Spotlight Tile */}
           <VideoTile
-            name="Prof. Robert Vance"
+            name={instructorName || 'Instructor'}
             role="teacher"
-            attentionScore={98}
+            attentionScore={isTeacher ? metrics.attentionScore : 98}
             isMuted={false}
             className="md:col-span-2 h-72 md:h-full min-h-[320px]"
           />
 
           {/* Student Grid */}
           <div className="grid grid-cols-2 md:grid-cols-1 gap-3 overflow-y-auto">
+            {/* Local User Tile */}
             <VideoTile
-              name={user?.name || 'Alex Johnson'}
-              role="student"
+              name={`${user?.name || 'You'} (Me)`}
+              role={user?.role === 'teacher' ? 'teacher' : 'student'}
               attentionScore={metrics.attentionScore}
               confusionScore={metrics.confusionScore}
               isMuted={!isMicOn}
@@ -223,9 +331,19 @@ export default function ClassroomMeetingPage() {
               canvasRef={canvasRef}
               className="h-44"
             />
-            <VideoTile name="Sarah Miller" role="student" attentionScore={88} confusionScore={12} className="h-44" />
-            <VideoTile name="David Clark" role="student" attentionScore={42} confusionScore={65} isHandRaised={true} className="h-44" />
-            <VideoTile name="Emma Watson" role="student" attentionScore={96} confusionScore={4} className="h-44" />
+
+            {/* Real Connected Peer Tiles */}
+            {peers.map((p) => (
+              <VideoTile
+                key={p.id}
+                name={p.name}
+                role="student"
+                attentionScore={p.attentionScore}
+                confusionScore={p.confusionScore}
+                isHandRaised={p.isHandRaised}
+                className="h-44"
+              />
+            ))}
           </div>
         </div>
 
@@ -256,7 +374,7 @@ export default function ClassroomMeetingPage() {
                   onClick={() => setActiveTab('participants')}
                   className={`flex-1 py-2.5 text-xs font-medium ${activeTab === 'participants' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-slate-400'}`}
                 >
-                  Roster ({studentsList.length})
+                  Roster ({peers.length + 1})
                 </button>
               </div>
 
@@ -299,14 +417,26 @@ export default function ClassroomMeetingPage() {
 
                 {activeTab === 'participants' && (
                   <div className="space-y-2">
-                    {studentsList.map((s, i) => (
-                      <div key={i} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
+                    {/* Self */}
+                    <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white">{user?.name || 'You'} (Me)</span>
+                        {isHandRaised && <Icons.Hand className="text-amber-500" size={14} />}
+                      </div>
+                      <Badge variant={metrics.attentionScore >= 70 ? 'success' : 'danger'} size="sm">
+                        {metrics.attentionScore}% Att.
+                      </Badge>
+                    </div>
+
+                    {/* Connected peers */}
+                    {peers.map((s) => (
+                      <div key={s.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-white">{s.name}</span>
-                          {s.hand && <Icons.Hand className="text-amber-500" size={14} />}
+                          {s.isHandRaised && <Icons.Hand className="text-amber-500" size={14} />}
                         </div>
-                        <Badge variant={s.attention >= 70 ? 'success' : 'danger'} size="sm">
-                          {s.attention}% Att.
+                        <Badge variant={s.attentionScore >= 70 ? 'success' : 'danger'} size="sm">
+                          {s.attentionScore}% Att.
                         </Badge>
                       </div>
                     ))}
@@ -373,7 +503,7 @@ export default function ClassroomMeetingPage() {
         </button>
 
         <Button variant="danger" size="sm" className="ml-4" onClick={handleLeave}>
-          End Session
+          {isTeacher ? 'End Session' : 'Leave Room'}
         </Button>
       </footer>
     </div>

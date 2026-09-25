@@ -67,73 +67,60 @@ export default function LoginPage() {
       }
 
       const tokenData = await response.json()
-      if (tokenData.access_token) {
-        localStorage.setItem('access_token', tokenData.access_token)
-
-        // Fetch user profile from /auth/me
-        try {
-          const meRes = await fetch(`${env.serverBaseUrl}/auth/me`, {
-            headers: {
-              Authorization: `Bearer ${tokenData.access_token}`,
-            },
-          })
-          if (meRes.ok) {
-            const userData = await meRes.json()
-            login({
-              id: userData.id,
-              name: userData.full_name,
-              email: userData.email,
-              role: userData.role,
-            })
-            setIsLoading(false)
-            showToast({
-              type: 'success',
-              title: 'Welcome back',
-              message: `Signed in as ${userData.full_name}.`,
-            })
-            if (userData.role === 'teacher') navigate('/teacher/dashboard')
-            else if (userData.role === 'student') navigate('/student/dashboard')
-            else navigate('/admin/dashboard')
-            return
-          }
-        } catch {
-          // Fall through to default handler if /auth/me fetch fails
-        }
-
-        // Default login if /auth/me is skipped
-        login({
-          id: 'usr_' + Math.random().toString(36).substr(2, 9),
-          name: data.email.split('@')[0],
-          email: data.email,
-          role: data.email.includes('teacher') ? 'teacher' : 'student',
-        })
+      if (!tokenData.access_token) {
         setIsLoading(false)
-        showToast({
-          type: 'success',
-          title: 'Welcome back',
-          message: 'Signed in successfully.',
-        })
-        if (data.email.includes('teacher')) navigate('/teacher/dashboard')
-        else navigate('/student/dashboard')
+        setAuthError('Authentication failed: No access token received.')
         return
       }
-    } catch {
-      // Offline / fallback demo authentication
-      setIsLoading(false)
-      const inferredRole = data.email.includes('teacher') ? 'teacher' : 'student'
-      login({
-        id: 'usr_' + Math.random().toString(36).substr(2, 9),
-        name: data.email.includes('teacher') ? 'Prof. Robert Vance' : 'Test Student',
-        email: data.email,
-        role: inferredRole,
+
+      // Fetch authoritative user profile from MongoDB /auth/me
+      const meRes = await fetch(`${env.serverBaseUrl}/auth/me`, {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+        },
       })
+
+      if (!meRes.ok) {
+        setIsLoading(false)
+        setAuthError('Failed to load user profile. Please try again.')
+        return
+      }
+
+      const userData = await meRes.json()
+      login(
+        {
+          id: userData.id,
+          name: userData.full_name,
+          email: userData.email,
+          role: userData.role,
+        },
+        tokenData.access_token
+      )
+
+      setIsLoading(false)
       showToast({
         type: 'success',
         title: 'Welcome back',
-        message: `Signed in as ${inferredRole}.`,
+        message: `Signed in as ${userData.full_name} (${userData.role.toUpperCase()}).`,
       })
-      if (inferredRole === 'teacher') navigate('/teacher/dashboard')
-      else navigate('/student/dashboard')
+
+      // Route strictly based on authoritative MongoDB role
+      if (userData.role === 'teacher') {
+        navigate('/teacher/dashboard')
+      } else if (userData.role === 'student') {
+        navigate('/student/dashboard')
+      } else {
+        navigate('/admin/dashboard')
+      }
+    } catch (err: any) {
+      setIsLoading(false)
+      const errMsg = err?.message || 'Network error: could not connect to authentication server.'
+      setAuthError(errMsg)
+      showToast({
+        type: 'danger',
+        title: 'Connection Error',
+        message: errMsg,
+      })
     }
   }
 
