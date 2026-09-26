@@ -36,6 +36,7 @@ app = FastAPI(
 # CORS Middleware (Configurable via FRONTEND_URL and CORS_ORIGINS)
 origins = settings.get_cors_origins() if hasattr(settings, "get_cors_origins") else getattr(settings, "cors_origins", [])
 for default_origin in [
+    "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
     "https://mind-map-real-time-student-attention.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -48,21 +49,8 @@ app.add_middleware(
     allow_origins=origins,
     allow_origin_regex=r"https:\/\/.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "User-Agent",
-        "DNT",
-        "Cache-Control",
-        "X-Mx-ReqToken",
-        "Keep-Alive",
-        "X-Requested-With",
-        "If-Modified-Since",
-        "*",
-    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount Routers
