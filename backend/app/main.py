@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -35,7 +36,17 @@ app = FastAPI(
 
 # CORS Middleware (Configurable via FRONTEND_URL and CORS_ORIGINS)
 origins = settings.get_cors_origins() if hasattr(settings, "get_cors_origins") else getattr(settings, "cors_origins", [])
+
+# Also directly check FRONTEND_URL environment variable to ensure immediate live pickup
+env_frontend = os.getenv("FRONTEND_URL", "")
+if env_frontend:
+    for u in env_frontend.split(","):
+        c = u.strip().strip("'\"").rstrip("/")
+        if c and c not in origins:
+            origins.append(c)
+
 for default_origin in [
+    "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
     "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
     "https://mind-map-real-time-student-attention.vercel.app",
     "http://localhost:5173",

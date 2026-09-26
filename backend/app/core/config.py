@@ -29,11 +29,12 @@ class Settings(BaseSettings):
     )
 
     frontend_url: str = Field(
-        default="https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
+        default="https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
         validation_alias=AliasChoices("FRONTEND_URL", "frontend_url"),
     )
     cors_origins: Union[list[str], str] = Field(
         default_factory=lambda: [
+            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
             "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
             "https://mind-map-real-time-student-attention.vercel.app",
             "http://localhost:5173",
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
 
     def get_cors_origins(self) -> list[str]:
         origins: list[str] = [
+            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
             "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
             "https://mind-map-real-time-student-attention.vercel.app",
             "http://localhost:5173",
@@ -58,27 +60,27 @@ class Settings(BaseSettings):
                 parsed = json.loads(self.cors_origins)
                 if isinstance(parsed, list):
                     for item in parsed:
-                        s = str(item).strip().rstrip("/")
+                        s = str(item).strip().strip("'\"").rstrip("/")
                         if s and s not in origins:
                             origins.append(s)
                 else:
-                    s = str(parsed).strip().rstrip("/")
+                    s = str(parsed).strip().strip("'\"").rstrip("/")
                     if s and s not in origins:
                         origins.append(s)
             except Exception:
                 for o in self.cors_origins.split(","):
-                    s = o.strip().rstrip("/")
+                    s = o.strip().strip("'\"").rstrip("/")
                     if s and s not in origins:
                         origins.append(s)
         elif isinstance(self.cors_origins, list):
             for o in self.cors_origins:
-                s = str(o).strip().rstrip("/")
+                s = str(o).strip().strip("'\"").rstrip("/")
                 if s and s not in origins:
                     origins.append(s)
 
         if self.frontend_url:
             for url in self.frontend_url.split(","):
-                clean = url.strip().rstrip("/")
+                clean = url.strip().strip("'\"").rstrip("/")
                 if clean and clean not in origins:
                     origins.append(clean)
         return origins

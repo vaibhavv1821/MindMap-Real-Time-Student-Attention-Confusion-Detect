@@ -13,7 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 
-PROD_ORIGIN = "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app"
+PROD_ORIGIN = "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app"
+ALT_PROD_ORIGIN = "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app"
 PREV_PROD_ORIGIN = "https://mind-map-real-time-student-attention.vercel.app"
 LOCAL_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -24,7 +25,7 @@ def client():
         yield test_client
 
 
-@pytest.mark.parametrize("origin", [PROD_ORIGIN, PREV_PROD_ORIGIN] + LOCAL_ORIGINS)
+@pytest.mark.parametrize("origin", [PROD_ORIGIN, ALT_PROD_ORIGIN, PREV_PROD_ORIGIN] + LOCAL_ORIGINS)
 @pytest.mark.parametrize("path", ["/auth/login", "/auth/register", "/api/auth/login", "/api/auth/register"])
 def test_cors_preflight_allowed_origins(client, origin, path):
     """Test that preflight OPTIONS requests return 200 with appropriate CORS headers."""
