@@ -62,3 +62,23 @@ def test_cors_not_wildcard():
     from app.core.config import settings
     origins = settings.get_cors_origins()
     assert "*" not in origins
+
+
+def test_specific_production_preflight_login(client):
+    """Step 6 Verification: Specific test for production OPTIONS /auth/login."""
+    origin = "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app"
+    resp = client.options(
+        "/auth/login",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == origin
+    assert resp.headers.get("access-control-allow-credentials") == "true"
+    allow_methods = resp.headers.get("access-control-allow-methods", "")
+    assert "POST" in allow_methods or "*" in allow_methods
+    allow_headers = resp.headers.get("access-control-allow-headers", "")
+    assert "content-type" in allow_headers.lower() or "*" in allow_headers

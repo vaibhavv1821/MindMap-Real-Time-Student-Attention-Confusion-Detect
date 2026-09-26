@@ -34,26 +34,29 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware (Configurable via FRONTEND_URL and CORS_ORIGINS)
-origins = settings.get_cors_origins() if hasattr(settings, "get_cors_origins") else getattr(settings, "cors_origins", [])
-
-# Also directly check FRONTEND_URL environment variable to ensure immediate live pickup
-env_frontend = os.getenv("FRONTEND_URL", "")
-if env_frontend:
-    for u in env_frontend.split(","):
-        c = u.strip().strip("'\"").rstrip("/")
-        if c and c not in origins:
-            origins.append(c)
-
-for default_origin in [
-    "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
-    "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
-    "https://mind-map-real-time-student-attention.vercel.app",
+# CORS Middleware (Explicit origins + FRONTEND_URL / CORS_ORIGINS)
+origins: list[str] = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
+]
+
+# Read from FRONTEND_URL or CORS_ORIGINS environment variables and settings
+for candidate in [
+    os.getenv("FRONTEND_URL", ""),
+    getattr(settings, "frontend_url", ""),
+    os.getenv("CORS_ORIGINS", ""),
 ]:
-    if default_origin not in origins:
-        origins.append(default_origin)
+    if candidate:
+        for u in candidate.split(","):
+            c = u.strip().strip("'\"").rstrip("/")
+            if c and c not in origins and c != "*":
+                origins.append(c)
+
+for item in (settings.get_cors_origins() if hasattr(settings, "get_cors_origins") else []):
+    clean_item = str(item).strip().strip("'\"").rstrip("/")
+    if clean_item and clean_item not in origins and clean_item != "*":
+        origins.append(clean_item)
 
 app.add_middleware(
     CORSMiddleware,
