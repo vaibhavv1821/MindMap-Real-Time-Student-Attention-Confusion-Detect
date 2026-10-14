@@ -7,6 +7,16 @@ client: AsyncIOMotorClient | None = None
 def get_db():
     """Returns the active database handle. Call connect_db() first at startup."""
     global client
+    try:
+        import asyncio
+        current_loop = asyncio.get_running_loop()
+        if client is not None:
+            client_loop = getattr(client, "io_loop", None)
+            if client_loop is not None and (client_loop.is_closed() or client_loop != current_loop):
+                client = None
+    except Exception:
+        pass
+
     if client is None:
         if settings.mongodb_uri:
             client = AsyncIOMotorClient(settings.mongodb_uri, serverSelectionTimeoutMS=5000)

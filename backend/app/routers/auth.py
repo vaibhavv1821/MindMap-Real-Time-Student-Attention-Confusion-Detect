@@ -19,10 +19,14 @@ async def register(data: RegisterIn):
         db = get_db()
     except Exception as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Database unavailable: {e}")
+    try:
+        hashed_password = hash_password(data.password)
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Password hashing failed: {e}")
     doc = {
         "full_name": data.full_name,
         "email": data.email,
-        "password_hash": hash_password(data.password),
+        "password_hash": hashed_password,
         "role": data.role.value,
         "is_active": True,
     }

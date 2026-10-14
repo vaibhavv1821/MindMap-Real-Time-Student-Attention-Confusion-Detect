@@ -20,7 +20,7 @@ def test_settings_mongodb_aliases(monkeypatch):
     monkeypatch.setenv("MONGODB_URI", "mongodb+srv://user:pass@cluster.mongodb.net/testdb")
     monkeypatch.setenv("MONGODB_DATABASE", "mindmap_test")
 
-    test_settings = Settings()
+    test_settings = Settings(_env_file=None)
     assert test_settings.mongodb_uri == "mongodb+srv://user:pass@cluster.mongodb.net/testdb"
     assert test_settings.db_name == "mindmap_test"
 
@@ -30,7 +30,7 @@ def test_settings_legacy_db_name_alias(monkeypatch):
     monkeypatch.delenv("MONGODB_DATABASE", raising=False)
     monkeypatch.setenv("DB_NAME", "mindmap_legacy")
 
-    test_settings = Settings()
+    test_settings = Settings(_env_file=None)
     assert test_settings.db_name == "mindmap_legacy"
 
 

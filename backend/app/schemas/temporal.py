@@ -85,6 +85,8 @@ class MLPredictionResult(BaseModel):
     Standardized Phase 2 ML Attention and Confusion Prediction Output.
     Derived strictly from Random Forest classification probability and temporal feature analysis.
     """
+    model_config = {"protected_namespaces": ()}
+
     attention_state: AttentionStateType = Field(..., description="Predicted attention state (ATTENTIVE / INATTENTIVE)")
     attention_score: float = Field(..., description="Calculated attention score [0.0 to 100.0]")
     confusion_state: ConfusionStateType = Field(..., description="Predicted confusion state (NORMAL / POSSIBLY_CONFUSED)")
