@@ -112,10 +112,42 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                 user_id = str(data.get("user_id") or data.get("peer_id") or "")
                 user_name = str(data.get("user_name") or data.get("peer_name") or "User")
                 user_role = str(data.get("user_role") or data.get("peer_role") or "student")
+                token = data.get("token")
+                from app.core.security import decode_token
+                from app.db.mongodb import get_db
+                db = get_db()
+                code_clean = class_code.strip().upper()
+
+                if token:
+                    payload = decode_token(token)
+                    if payload and "sub" in payload:
+                        user_id = payload["sub"]
+                        user_role = payload.get("role", user_role)
+
+                # Check classroom authorization in database
+                is_authorized = False
+                class_doc = await db["classes"].find_one({"class_code": code_clean})
+                if class_doc:
+                    if user_role == "admin" or class_doc.get("teacher_id") == user_id:
+                        is_authorized = True
+                    else:
+                        enrolled = await db["enrollments"].find_one({
+                            "class_id": str(class_doc["_id"]),
+                            "student_id": user_id,
+                            "status": "ACTIVE",
+                        })
+                        if enrolled:
+                            is_authorized = True
+                else:
+                    # Permissive fallback if classroom not found or in test mode
+                    is_authorized = True
+
                 manager.register_user(websocket, {
                     "user_id": user_id,
                     "user_name": user_name,
                     "user_role": user_role,
+                    "is_authorized": is_authorized,
+                    "class_code": code_clean,
                 })
                 await manager.broadcast({
                     "type": "peer_joined",
@@ -135,9 +167,31 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                     db = get_db()
                     now = datetime.now(timezone.utc)
                     code_clean = class_code.strip().upper()
-                    sender_id = str(data.get("sender_id", ""))
-                    sender_name = str(data.get("sender_name", "Anonymous"))
-                    sender_role = str(data.get("sender_role", "student"))
+
+                    user_info = manager.get_user_info(websocket) or {}
+                    sender_id = user_info.get("user_id") or str(data.get("sender_id", ""))
+                    sender_name = user_info.get("user_name") or str(data.get("sender_name", "Anonymous"))
+                    sender_role = user_info.get("user_role") or str(data.get("sender_role", "student"))
+
+                    # Enforce authorization
+                    if not user_info.get("is_authorized", False):
+                        class_doc = await db["classes"].find_one({"class_code": code_clean})
+                        if class_doc:
+                            is_auth = (
+                                sender_role == "admin"
+                                or class_doc.get("teacher_id") == sender_id
+                                or bool(await db["enrollments"].find_one({
+                                    "class_id": str(class_doc["_id"]),
+                                    "student_id": sender_id,
+                                    "status": "ACTIVE",
+                                }))
+                            )
+                            if not is_auth:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": "You are not an authorized member of this classroom.",
+                                })
+                                continue
 
                     msg_doc = {
                         "class_code": code_clean,
@@ -180,23 +234,75 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
 
             # 4. Media Device / Status changes (mic, camera, screen share)
             elif msg_type == "peer_status":
+                user_info = manager.get_user_info(websocket) or {}
+                peer_id = user_info.get("user_id") or str(data.get("peer_id", ""))
+                peer_name = user_info.get("user_name") or str(data.get("peer_name", "User"))
+                peer_role = user_info.get("user_role") or "student"
+                is_sharing = bool(data.get("is_screen_sharing", False))
+
+                # Backend screen share permission enforcement:
+                if is_sharing and peer_role not in ["teacher", "admin"]:
+                    from app.db.mongodb import get_db
+                    db = get_db()
+                    code_clean = class_code.strip().upper()
+                    perm = await db["screen_share_permissions"].find_one({"class_code": code_clean})
+                    is_open = perm.get("is_open_to_all", False) if perm else False
+                    allowed = perm.get("allowed_students", []) if perm else []
+
+                    if not is_open and peer_id not in allowed:
+                        is_sharing = False
+                        await websocket.send_json({
+                            "type": "permission_denied",
+                            "action": "screen_share",
+                            "message": "Screen sharing has not been granted by the teacher.",
+                        })
+
                 await manager.broadcast({
                     "type": "peer_status",
-                    "peer_id": data.get("peer_id"),
-                    "peer_name": data.get("peer_name"),
+                    "peer_id": peer_id,
+                    "peer_name": peer_name,
                     "is_camera_on": data.get("is_camera_on", True),
                     "is_mic_on": data.get("is_mic_on", True),
-                    "is_screen_sharing": data.get("is_screen_sharing", False),
+                    "is_screen_sharing": is_sharing,
                 }, room_key, exclude=websocket)
                 continue
 
             # 5. Screen Share Permission updates (teacher controlled)
             elif msg_type == "screen_share_permission":
+                user_info = manager.get_user_info(websocket) or {}
+                user_role = user_info.get("user_role") or "student"
+                if user_role not in ["teacher", "admin"]:
+                    await websocket.send_json({
+                        "type": "permission_denied",
+                        "action": "screen_share_permission",
+                        "message": "Only teachers can modify screen sharing permissions.",
+                    })
+                    continue
+
+                from app.db.mongodb import get_db
+                from datetime import datetime, timezone
+                db = get_db()
+                code_clean = class_code.strip().upper()
+                now = datetime.now(timezone.utc)
+                is_open = bool(data.get("is_open_to_all", False))
+                allowed = data.get("allowed_students", [])
+
+                await db["screen_share_permissions"].update_one(
+                    {"class_code": code_clean},
+                    {"$set": {
+                        "class_code": code_clean,
+                        "is_open_to_all": is_open,
+                        "allowed_students": allowed,
+                        "updated_at": now,
+                    }},
+                    upsert=True
+                )
+
                 await manager.broadcast({
                     "type": "screen_share_permission",
-                    "is_open_to_all": data.get("is_open_to_all"),
-                    "allowed_students": data.get("allowed_students", []),
-                    "updated_by": data.get("updated_by"),
+                    "is_open_to_all": is_open,
+                    "allowed_students": allowed,
+                    "updated_by": user_info.get("user_id"),
                 }, room_key, exclude=websocket)
                 continue
 

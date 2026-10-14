@@ -244,3 +244,102 @@ def test_report_data_role_separation(client, class_setup):
         headers={"Authorization": f"Bearer {class_setup['other_token']}"}
     )
     assert o_rep.status_code == 403
+
+
+def test_websocket_chat_and_signaling(client, class_setup):
+    """Verifies real-time WebSocket chat and WebRTC signal exchange between participants."""
+    code = class_setup["class_code"]
+
+    with client.websocket_connect(f"/ws/{code}") as ws_teacher:
+        ws_teacher.send_json({
+            "type": "join",
+            "user_id": class_setup["teacher_id"],
+            "user_name": "Teacher Alice",
+            "user_role": "teacher",
+            "token": class_setup["teacher_token"],
+        })
+
+        with client.websocket_connect(f"/ws/{code}") as ws_student:
+            ws_student.send_json({
+                "type": "join",
+                "user_id": class_setup["student_id"],
+                "user_name": "Student Bob",
+                "user_role": "student",
+                "token": class_setup["student_token"],
+            })
+
+            # Teacher receives peer_joined event for student
+            event = ws_teacher.receive_json()
+            assert event["type"] == "peer_joined"
+            assert event["peer_id"] == class_setup["student_id"]
+
+            # Student sends chat message over WebSocket
+            ws_student.send_json({
+                "type": "chat_message",
+                "text": "Hello teacher over WebSocket!",
+                "sender_id": class_setup["student_id"],
+                "sender_name": "Student Bob",
+                "sender_role": "student",
+            })
+
+            # Both student and teacher receive broadcasted chat message
+            s_msg = ws_student.receive_json()
+            if s_msg["type"] == "peer_joined":
+                s_msg = ws_student.receive_json()
+            assert s_msg["type"] == "chat_message"
+            assert s_msg["text"] == "Hello teacher over WebSocket!"
+
+            t_msg = ws_teacher.receive_json()
+            assert t_msg["type"] == "chat_message"
+            assert t_msg["text"] == "Hello teacher over WebSocket!"
+
+            # Teacher sends WebRTC signal (offer) to student
+            ws_teacher.send_json({
+                "type": "webrtc_signal",
+                "target_id": class_setup["student_id"],
+                "sender_id": class_setup["teacher_id"],
+                "signal": {"type": "offer", "sdp": "fake_offer_sdp"},
+            })
+
+            # Student receives WebRTC signal
+            sig_received = ws_student.receive_json()
+            assert sig_received["type"] == "webrtc_signal"
+            assert sig_received["sender_id"] == class_setup["teacher_id"]
+            assert sig_received["signal"]["type"] == "offer"
+
+
+def test_websocket_screen_share_backend_enforcement(client, class_setup):
+    """Verifies that the backend rejects screen sharing if permission is not granted by the teacher."""
+    code = class_setup["class_code"]
+
+    # Ensure open-to-all is revoked
+    client.post(
+        f"/classes/{code}/screen-share-permission",
+        json={"is_open_to_all": False, "allowed_student_id": class_setup["student_id"], "action": "revoke"},
+        headers={"Authorization": f"Bearer {class_setup['teacher_token']}"}
+    )
+
+    with client.websocket_connect(f"/ws/{code}") as ws_student:
+        ws_student.send_json({
+            "type": "join",
+            "user_id": class_setup["student_id"],
+            "user_name": "Student Bob",
+            "user_role": "student",
+            "token": class_setup["student_token"],
+        })
+
+        # Student attempts to set is_screen_sharing=True without permission
+        ws_student.send_json({
+            "type": "peer_status",
+            "peer_id": class_setup["student_id"],
+            "peer_name": "Student Bob",
+            "is_camera_on": True,
+            "is_mic_on": True,
+            "is_screen_sharing": True,
+        })
+
+        # Backend immediately sends permission_denied to student
+        denied = ws_student.receive_json()
+        assert denied["type"] == "permission_denied"
+        assert denied["action"] == "screen_share"
+

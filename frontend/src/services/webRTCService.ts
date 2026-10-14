@@ -18,6 +18,7 @@ export class WebRTCService {
   private localStream: MediaStream | null = null
   private displayStream: MediaStream | null = null
   private peerConnections: Map<string, RTCPeerConnection> = new Map()
+  private candidateQueue: Map<string, RTCIceCandidateInit[]> = new Map()
   private iceServers: ICEServerConfig[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
   private sendSignal: SignalCallback | null = null
   private onRemoteStream: RemoteStreamCallback | null = null
@@ -167,6 +168,7 @@ export class WebRTCService {
     try {
       if (signal.type === 'offer' && signal.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+        await this.drainCandidateQueue(peerId, pc)
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
         if (this.sendSignal) {
@@ -177,11 +179,37 @@ export class WebRTCService {
         }
       } else if (signal.type === 'answer' && signal.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+        await this.drainCandidateQueue(peerId, pc)
       } else if (signal.type === 'candidate' && signal.candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate))
+        if (!pc.remoteDescription || !pc.remoteDescription.type) {
+          if (!this.candidateQueue.has(peerId)) {
+            this.candidateQueue.set(peerId, [])
+          }
+          this.candidateQueue.get(peerId)!.push(signal.candidate)
+        } else {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate))
+          } catch (e) {
+            console.warn(`[WebRTC] Failed to add ICE candidate for ${peerId}:`, e)
+          }
+        }
       }
     } catch (err) {
       console.error(`[WebRTC] Error handling signal from ${peerId}:`, err)
+    }
+  }
+
+  private async drainCandidateQueue(peerId: string, pc: RTCPeerConnection) {
+    const queue = this.candidateQueue.get(peerId)
+    if (queue && queue.length > 0) {
+      for (const cand of queue) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(cand))
+        } catch (e) {
+          console.warn(`[WebRTC] Failed to add queued ICE candidate for ${peerId}:`, e)
+        }
+      }
+      this.candidateQueue.delete(peerId)
     }
   }
 
@@ -258,6 +286,7 @@ export class WebRTCService {
       pc.close()
       this.peerConnections.delete(peerId)
     }
+    this.candidateQueue.delete(peerId)
     if (this.onPeerRemove) {
       this.onPeerRemove(peerId)
     }
@@ -273,5 +302,6 @@ export class WebRTCService {
 
     this.peerConnections.forEach((pc) => pc.close())
     this.peerConnections.clear()
+    this.candidateQueue.clear()
   }
 }

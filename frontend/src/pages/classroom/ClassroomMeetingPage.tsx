@@ -262,155 +262,194 @@ export default function ClassroomMeetingPage() {
     }
   }, [])
 
-  // 5. Connect to Classroom WebSocket Infrastructure
+  // 5. Connect to Classroom WebSocket Infrastructure with Auto-Reconnect
   useEffect(() => {
     if (!targetCode || !user) return
 
-    const wsUrl = `${env.wsBaseUrl}/${targetCode}`
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
+    let isMounted = true
+    let reconnectTimeout: any = null
+    let reconnectAttempts = 0
+    const maxReconnectAttempts = 5
 
-    ws.onopen = () => {
-      // Announce identity and join room
-      ws.send(
-        JSON.stringify({
-          type: 'join',
-          user_id: user.id,
-          user_name: user.name,
-          user_role: user.role,
-        })
-      )
-    }
+    function connectWs() {
+      if (!isMounted || !targetCode || !user) return
+      const wsUrl = `${env.wsBaseUrl}/${targetCode}`
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
 
-    ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data)
-        if (!payload || typeof payload !== 'object') return
-
-        const msgType = payload.type
-
-        // A. Real-Time Chat Message
-        if (msgType === 'chat_message') {
-          setChatMessages((prev) => {
-            const exists = prev.some(
-              (m) => m.id === payload.id || (payload.temp_id && m.id === payload.temp_id)
-            )
-            if (exists) return prev
-            const newMsg: ChatMessage = {
-              id: payload.id || Math.random().toString(),
-              class_code: payload.class_code || targetCode,
-              sender_id: payload.sender_id || '',
-              sender_name: payload.sender_name || 'Anonymous',
-              sender_role: payload.sender_role || 'student',
-              text: payload.text || '',
-              timestamp: payload.timestamp || new Date().toISOString(),
-            }
-            return [...prev, newMsg]
+      ws.onopen = () => {
+        reconnectAttempts = 0
+        const token = localStorage.getItem('access_token') || ''
+        // Announce identity and join room with token
+        ws.send(
+          JSON.stringify({
+            type: 'join',
+            user_id: user.id,
+            user_name: user.name,
+            user_role: user.role,
+            token,
           })
-        }
+        )
+      }
 
-        // B. Peer Joined Room -> Initiate WebRTC Call
-        else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user.id) {
-          setPeers((prev) => {
-            const exists = prev.some((p) => p.id === payload.peer_id)
-            if (exists) return prev
-            return [
-              ...prev,
-              {
-                id: payload.peer_id,
-                name: payload.peer_name || 'Classmate',
-                email: '',
-                role: payload.peer_role || 'student',
-                attentionScore: 85,
-                confusionScore: 15,
-                isHandRaised: false,
-                isCameraOff: false,
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data)
+          if (!payload || typeof payload !== 'object') return
+
+          const msgType = payload.type
+
+          // A. Real-Time Chat Message
+          if (msgType === 'chat_message') {
+            setChatMessages((prev) => {
+              const exists = prev.some(
+                (m) => m.id === payload.id || (payload.temp_id && m.id === payload.temp_id)
+              )
+              if (exists) return prev
+              const newMsg: ChatMessage = {
+                id: payload.id || Math.random().toString(),
+                class_code: payload.class_code || targetCode,
+                sender_id: payload.sender_id || '',
+                sender_name: payload.sender_name || 'Anonymous',
+                sender_role: payload.sender_role || 'student',
+                text: payload.text || '',
+                timestamp: payload.timestamp || new Date().toISOString(),
+              }
+              return [...prev, newMsg]
+            })
+          }
+
+          // B. Peer Joined Room -> Initiate WebRTC Call
+          else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user.id) {
+            setPeers((prev) => {
+              const exists = prev.some((p) => p.id === payload.peer_id)
+              if (exists) return prev
+              return [
+                ...prev,
+                {
+                  id: payload.peer_id,
+                  name: payload.peer_name || 'Classmate',
+                  email: '',
+                  role: payload.peer_role || 'student',
+                  attentionScore: 85,
+                  confusionScore: 15,
+                  isHandRaised: false,
+                  isCameraOff: false,
+                  isMuted: false,
+                  isScreenSharing: false,
+                  connectionStatus: 'ONLINE',
+                  lastSeen: Date.now(),
+                },
+              ]
+            })
+
+            // As existing participant, initiate WebRTC offer to newcomer
+            if (webrtcRef.current) {
+              webrtcRef.current.initiateOffer(payload.peer_id)
+            }
+          }
+
+          // C. WebRTC Signaling Dispatch
+          else if (msgType === 'webrtc_signal' && payload.target_id === user.id) {
+            if (webrtcRef.current && payload.sender_id && payload.signal) {
+              webrtcRef.current.handleSignal(payload.sender_id, payload.signal)
+            }
+          }
+
+          // D. Peer Media Status Change (mic, camera, screen share)
+          else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== user.id) {
+            setPeers((prev) =>
+              prev.map((p) =>
+                p.id === payload.peer_id
+                  ? {
+                      ...p,
+                      isCameraOff: !payload.is_camera_on,
+                      isMuted: !payload.is_mic_on,
+                      isScreenSharing: !!payload.is_screen_sharing,
+                    }
+                  : p
+              )
+            )
+          }
+
+          // E. Peer Left Room
+          else if (msgType === 'peer_left' && payload.peer_id) {
+            if (webrtcRef.current) {
+              webrtcRef.current.removePeer(payload.peer_id)
+            }
+            setPeers((prev) => prev.filter((p) => p.id !== payload.peer_id))
+          }
+
+          // F. Screen Share Permission Update
+          else if (msgType === 'screen_share_permission') {
+            setIsOpenScreenShare(!!payload.is_open_to_all)
+            const allowed = Array.isArray(payload.allowed_students) && payload.allowed_students.includes(user.id)
+            setCanShareScreen(isTeacher || !!payload.is_open_to_all || allowed)
+          }
+
+          // G. Backend Permission Denied Alert
+          else if (msgType === 'permission_denied') {
+            showToast({
+              type: 'danger',
+              title: 'Permission Denied',
+              message: payload.message || 'Action restricted by the instructor.',
+            })
+            if (payload.action === 'screen_share') {
+              if (webrtcRef.current) {
+                webrtcRef.current.stopScreenShare()
+              }
+              setIsScreenSharing(false)
+            }
+          }
+
+          // H. Live Attention & Confusion Telemetry
+          else if (payload.student_id && payload.student_id !== user.id) {
+            setPeers((prev) => {
+              const idx = prev.findIndex((p) => p.id === payload.student_id)
+              const item: PeerStudent = {
+                id: payload.student_id,
+                name: payload.student_name || 'Student',
+                email: payload.student_email || '',
+                role: 'student',
+                attentionScore: payload.attention_score ?? 85,
+                confusionScore: payload.confusion_score ?? 15,
+                isHandRaised: !!payload.is_hand_raised,
+                isCameraOff: payload.connection_status === 'CAMERA_MUTED',
                 isMuted: false,
                 isScreenSharing: false,
-                connectionStatus: 'ONLINE',
+                connectionStatus: payload.connection_status || 'ONLINE',
                 lastSeen: Date.now(),
-              },
-            ]
-          })
-
-          // As existing participant, initiate WebRTC offer to newcomer
-          if (webrtcRef.current) {
-            webrtcRef.current.initiateOffer(payload.peer_id)
+              }
+              if (idx >= 0) {
+                const copy = [...prev]
+                copy[idx] = { ...copy[idx], ...item }
+                return copy
+              } else {
+                return [...prev, item]
+              }
+            })
           }
+        } catch {
+          // Safe ignore on malformed messages
         }
+      }
 
-        // C. WebRTC Signaling Dispatch
-        else if (msgType === 'webrtc_signal' && payload.target_id === user.id) {
-          if (webrtcRef.current && payload.sender_id && payload.signal) {
-            webrtcRef.current.handleSignal(payload.sender_id, payload.signal)
-          }
+      ws.onclose = () => {
+        if (!isMounted) return
+        if (reconnectAttempts < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000)
+          reconnectAttempts++
+          reconnectTimeout = setTimeout(connectWs, delay)
         }
-
-        // D. Peer Media Status Change (mic, camera, screen share)
-        else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== user.id) {
-          setPeers((prev) =>
-            prev.map((p) =>
-              p.id === payload.peer_id
-                ? {
-                    ...p,
-                    isCameraOff: !payload.is_camera_on,
-                    isMuted: !payload.is_mic_on,
-                    isScreenSharing: !!payload.is_screen_sharing,
-                  }
-                : p
-            )
-          )
-        }
-
-        // E. Peer Left Room
-        else if (msgType === 'peer_left' && payload.peer_id) {
-          if (webrtcRef.current) {
-            webrtcRef.current.removePeer(payload.peer_id)
-          }
-          setPeers((prev) => prev.filter((p) => p.id !== payload.peer_id))
-        }
-
-        // F. Screen Share Permission Update
-        else if (msgType === 'screen_share_permission') {
-          setIsOpenScreenShare(!!payload.is_open_to_all)
-          const allowed = Array.isArray(payload.allowed_students) && payload.allowed_students.includes(user.id)
-          setCanShareScreen(isTeacher || !!payload.is_open_to_all || allowed)
-        }
-
-        // G. Live Attention & Confusion Telemetry
-        else if (payload.student_id && payload.student_id !== user.id) {
-          setPeers((prev) => {
-            const idx = prev.findIndex((p) => p.id === payload.student_id)
-            const item: PeerStudent = {
-              id: payload.student_id,
-              name: payload.student_name || 'Student',
-              email: payload.student_email || '',
-              role: 'student',
-              attentionScore: payload.attention_score ?? 85,
-              confusionScore: payload.confusion_score ?? 15,
-              isHandRaised: !!payload.is_hand_raised,
-              isCameraOff: payload.connection_status === 'CAMERA_MUTED',
-              isMuted: false,
-              isScreenSharing: false,
-              connectionStatus: payload.connection_status || 'ONLINE',
-              lastSeen: Date.now(),
-            }
-            if (idx >= 0) {
-              const copy = [...prev]
-              copy[idx] = { ...copy[idx], ...item }
-              return copy
-            } else {
-              return [...prev, item]
-            }
-          })
-        }
-      } catch {
-        // Safe ignore on malformed messages
       }
     }
 
+    connectWs()
+
     return () => {
-      ws.close()
+      isMounted = false
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      if (wsRef.current) wsRef.current.close()
     }
   }, [targetCode, user, isTeacher])
 
