@@ -149,9 +149,27 @@ export default function TeacherLiveMonitoringPage() {
       },
       // On Remote Stream Received (Student Video & Audio)
       (peerId, remoteStream) => {
-        setPeers((prev) =>
-          prev.map((p) => (p.id === peerId ? { ...p, stream: remoteStream } : p))
-        )
+        setPeers((prev) => {
+          const exists = prev.some((p) => p.id === peerId)
+          if (exists) {
+            return prev.map((p) => (p.id === peerId ? { ...p, stream: remoteStream } : p))
+          }
+          return [
+            ...prev,
+            {
+              id: peerId,
+              name: 'Student',
+              email: '',
+              attentionScore: 85,
+              confusionScore: 15,
+              isCameraOff: false,
+              isMuted: false,
+              isScreenSharing: false,
+              stream: remoteStream,
+              lastSeen: Date.now(),
+            },
+          ]
+        })
       },
       // On Peer Disconnected
       (peerId) => {
@@ -165,6 +183,7 @@ export default function TeacherLiveMonitoringPage() {
         setLocalStream(stream)
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream
+          localVideoRef.current.play().catch(() => {})
         }
       }
     })
@@ -189,6 +208,12 @@ export default function TeacherLiveMonitoringPage() {
             token,
           })
         )
+        // Request existing peers in room
+        ws.send(
+          JSON.stringify({
+            type: 'get_peers',
+          })
+        )
       }
 
       ws.onmessage = (event) => {
@@ -198,11 +223,43 @@ export default function TeacherLiveMonitoringPage() {
 
           const msgType = payload.type
 
-          // A. Student Joined Classroom -> Teacher Initiates WebRTC Offer
-          if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user?.id) {
+          // A1. Room Peers List (from get_peers) -> Initiate WebRTC offers to all present students
+          if (msgType === 'room_peers' && Array.isArray(payload.peers)) {
+            payload.peers.forEach((peer: any) => {
+              if (!peer.peer_id || peer.peer_id === user?.id) return
+              setPeers((prev) => {
+                const exists = prev.some((p) => p.id === peer.peer_id)
+                if (exists) return prev
+                return [
+                  ...prev,
+                  {
+                    id: peer.peer_id,
+                    name: peer.peer_name || 'Student',
+                    email: '',
+                    attentionScore: 85,
+                    confusionScore: 15,
+                    isCameraOff: false,
+                    isMuted: false,
+                    isScreenSharing: false,
+                    lastSeen: Date.now(),
+                  },
+                ]
+              })
+              if (webrtcRef.current) {
+                webrtcRef.current.initiateOffer(peer.peer_id)
+              }
+            })
+          }
+
+          // A2. Student Joined Classroom -> Teacher Initiates WebRTC Offer
+          else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user?.id) {
             setPeers((prev) => {
               const exists = prev.some((p) => p.id === payload.peer_id)
-              if (exists) return prev
+              if (exists) {
+                return prev.map((p) =>
+                  p.id === payload.peer_id ? { ...p, name: payload.peer_name || p.name } : p
+                )
+              }
               return [
                 ...prev,
                 {
@@ -227,6 +284,26 @@ export default function TeacherLiveMonitoringPage() {
 
           // B. WebRTC Signaling Dispatch (Answer / Candidate from Student)
           else if (msgType === 'webrtc_signal' && payload.target_id === user?.id) {
+            if (payload.sender_id) {
+              setPeers((prev) => {
+                const exists = prev.some((p) => p.id === payload.sender_id)
+                if (exists) return prev
+                return [
+                  ...prev,
+                  {
+                    id: payload.sender_id,
+                    name: payload.sender_name || 'Student',
+                    email: '',
+                    attentionScore: 85,
+                    confusionScore: 15,
+                    isCameraOff: false,
+                    isMuted: false,
+                    isScreenSharing: false,
+                    lastSeen: Date.now(),
+                  },
+                ]
+              })
+            }
             if (webrtcRef.current && payload.sender_id && payload.signal) {
               webrtcRef.current.handleSignal(payload.sender_id, payload.signal)
             }

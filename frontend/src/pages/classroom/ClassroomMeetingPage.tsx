@@ -198,22 +198,30 @@ export default function ClassroomMeetingPage() {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, activeTab])
 
-  // 3. Initialize WebRTC Media & Service
+  // Keep fresh ref to user to avoid rebuilding WebRTC & tearing down media tracks on auth updates
+  const userRef = useRef(user)
+  userRef.current = user
+
+  // 3. Initialize Local Media, WebRTC Service & AI Telemetry Engine
   useEffect(() => {
+    let isMounted = true
     const rtc = new WebRTCService()
     webrtcRef.current = rtc
+    const aiService = new AIDetectorService()
+    aiServiceRef.current = aiService
 
     rtc.setCallbacks(
       // Send signal via WebSocket
       (targetId, signal) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        const currentUser = userRef.current
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUser) {
           wsRef.current.send(
             JSON.stringify({
               type: 'webrtc_signal',
               target_id: targetId,
-              sender_id: user.id,
-              sender_name: user.name,
-              sender_role: user.role,
+              sender_id: currentUser.id,
+              sender_name: currentUser.name,
+              sender_role: currentUser.role,
               signal,
             })
           )
@@ -221,9 +229,30 @@ export default function ClassroomMeetingPage() {
       },
       // On Remote Stream Received
       (peerId, remoteStream) => {
-        setPeers((prev) =>
-          prev.map((p) => (p.id === peerId ? { ...p, stream: remoteStream } : p))
-        )
+        setPeers((prev) => {
+          const exists = prev.some((p) => p.id === peerId)
+          if (exists) {
+            return prev.map((p) => (p.id === peerId ? { ...p, stream: remoteStream } : p))
+          }
+          return [
+            ...prev,
+            {
+              id: peerId,
+              name: 'Peer',
+              email: '',
+              role: 'student',
+              attentionScore: 85,
+              confusionScore: 15,
+              isHandRaised: false,
+              isCameraOff: false,
+              isMuted: false,
+              isScreenSharing: false,
+              connectionStatus: 'ONLINE',
+              stream: remoteStream,
+              lastSeen: Date.now(),
+            },
+          ]
+        })
       },
       // On Peer Disconnected
       (peerId) => {
@@ -231,34 +260,39 @@ export default function ClassroomMeetingPage() {
       }
     )
 
-    // Start local media stream for WebRTC
-    rtc.startLocalMedia().then((stream) => {
+    // Acquire camera & microphone and start local media once
+    rtc.startLocalMedia().then(async (stream) => {
+      if (!isMounted) return
       if (stream) {
         setLocalStream(stream)
         if (videoRef.current) {
           videoRef.current.srcObject = stream
+          try {
+            await videoRef.current.play()
+          } catch {
+            // Autoplay handled
+          }
         }
+      }
+      // Start AI Detection reusing the exact same stream (prevents Windows camera device lock collision)
+      if (videoRef.current && canvasRef.current) {
+        aiService.start(
+          videoRef.current,
+          canvasRef.current,
+          (newMetrics) => {
+            if (isMounted) {
+              setMetrics(newMetrics)
+            }
+          },
+          stream
+        )
       }
     })
 
     return () => {
+      isMounted = false
+      aiService.stop()
       rtc.cleanup()
-    }
-  }, [user])
-
-  // 4. Start Local MediaPipe FaceMesh & AI Telemetry Engine
-  useEffect(() => {
-    aiServiceRef.current = new AIDetectorService()
-    if (videoRef.current && canvasRef.current) {
-      aiServiceRef.current.start(videoRef.current, canvasRef.current, (newMetrics) => {
-        setMetrics(newMetrics)
-      })
-    }
-
-    return () => {
-      if (aiServiceRef.current) {
-        aiServiceRef.current.stop()
-      }
     }
   }, [])
 
@@ -290,6 +324,12 @@ export default function ClassroomMeetingPage() {
             token,
           })
         )
+        // Request existing peers already present in the room
+        ws.send(
+          JSON.stringify({
+            type: 'get_peers',
+          })
+        )
       }
 
       ws.onmessage = (event) => {
@@ -319,16 +359,54 @@ export default function ClassroomMeetingPage() {
             })
           }
 
+          // A2. Existing Room Peers List (from get_peers)
+          else if (msgType === 'room_peers' && Array.isArray(payload.peers)) {
+            payload.peers.forEach((peer: any) => {
+              if (!peer.peer_id || peer.peer_id === user.id) return
+              setPeers((prev) => {
+                const exists = prev.some((p) => p.id === peer.peer_id)
+                if (exists) return prev
+                return [
+                  ...prev,
+                  {
+                    id: peer.peer_id,
+                    name: peer.peer_name || (peer.peer_role === 'teacher' ? 'Instructor' : 'Classmate'),
+                    email: '',
+                    role: peer.peer_role || 'student',
+                    attentionScore: 85,
+                    confusionScore: 15,
+                    isHandRaised: false,
+                    isCameraOff: false,
+                    isMuted: false,
+                    isScreenSharing: false,
+                    connectionStatus: 'ONLINE',
+                    lastSeen: Date.now(),
+                  },
+                ]
+              })
+              // If teacher, initiate offer to newly found peer
+              if (webrtcRef.current && (user.role === 'teacher' || user.role === 'admin')) {
+                webrtcRef.current.initiateOffer(peer.peer_id)
+              }
+            })
+          }
+
           // B. Peer Joined Room -> Initiate WebRTC Call
           else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user.id) {
             setPeers((prev) => {
               const exists = prev.some((p) => p.id === payload.peer_id)
-              if (exists) return prev
+              if (exists) {
+                return prev.map((p) =>
+                  p.id === payload.peer_id
+                    ? { ...p, name: payload.peer_name || p.name, role: payload.peer_role || p.role }
+                    : p
+                )
+              }
               return [
                 ...prev,
                 {
                   id: payload.peer_id,
-                  name: payload.peer_name || 'Classmate',
+                  name: payload.peer_name || (payload.peer_role === 'teacher' ? 'Instructor' : 'Classmate'),
                   email: '',
                   role: payload.peer_role || 'student',
                   attentionScore: 85,
@@ -351,6 +429,35 @@ export default function ClassroomMeetingPage() {
 
           // C. WebRTC Signaling Dispatch
           else if (msgType === 'webrtc_signal' && payload.target_id === user.id) {
+            if (payload.sender_id) {
+              setPeers((prev) => {
+                const exists = prev.some((p) => p.id === payload.sender_id)
+                if (exists) {
+                  return prev.map((p) =>
+                    p.id === payload.sender_id && payload.sender_name
+                      ? { ...p, name: payload.sender_name, role: payload.sender_role || p.role }
+                      : p
+                  )
+                }
+                return [
+                  ...prev,
+                  {
+                    id: payload.sender_id,
+                    name: payload.sender_name || (payload.sender_role === 'teacher' ? 'Instructor' : 'Classmate'),
+                    email: '',
+                    role: payload.sender_role || 'student',
+                    attentionScore: 85,
+                    confusionScore: 15,
+                    isHandRaised: false,
+                    isCameraOff: false,
+                    isMuted: false,
+                    isScreenSharing: false,
+                    connectionStatus: 'ONLINE',
+                    lastSeen: Date.now(),
+                  },
+                ]
+              })
+            }
             if (webrtcRef.current && payload.sender_id && payload.signal) {
               webrtcRef.current.handleSignal(payload.sender_id, payload.signal)
             }
@@ -557,9 +664,14 @@ export default function ClassroomMeetingPage() {
     if (!nextState && aiServiceRef.current) {
       aiServiceRef.current.stop()
     } else if (nextState && aiServiceRef.current && videoRef.current && canvasRef.current) {
-      aiServiceRef.current.start(videoRef.current, canvasRef.current, (newMetrics) => {
-        setMetrics(newMetrics)
-      })
+      aiServiceRef.current.start(
+        videoRef.current,
+        canvasRef.current,
+        (newMetrics) => {
+          setMetrics(newMetrics)
+        },
+        localStream
+      )
     }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
       wsRef.current.send(
@@ -719,6 +831,74 @@ export default function ClassroomMeetingPage() {
   const roomCode = classInfo?.class_code || targetCode.toUpperCase() || 'ROOM'
   const instructorName = classInfo?.teacher_name || (isTeacher ? user?.name : 'Faculty Instructor')
 
+  // Main stage spotlight determination:
+  // 1. Any peer currently sharing screen
+  // 2. Instructor / Teacher peer (from WebRTC peers list)
+  // 3. Current user (if teacher presenting or instructor self-view)
+  const screenPresenter = peers.find((p) => p.isScreenSharing)
+  const teacherPeer = peers.find((p) => p.role === 'teacher' || p.role === 'admin')
+  const spotlightPeer = screenPresenter || (!isTeacher ? teacherPeer : null)
+
+  const spotlightProps = isTeacher
+    ? isScreenSharing
+      ? {
+          peerId: user?.id,
+          name: `${user?.name || 'You'} (Presenting Screen)`,
+          role: 'teacher' as const,
+          attentionScore: metrics.attentionScore,
+          confusionScore: metrics.confusionScore,
+          isMuted: !isMicOn,
+          isCameraOff: false,
+          isScreenSharing: true,
+          stream: webrtcRef.current?.getLocalStream() || localStream,
+        }
+      : screenPresenter
+      ? {
+          peerId: screenPresenter.id,
+          name: `${screenPresenter.name} (Screen Share)`,
+          role: (screenPresenter.role === 'teacher' ? 'teacher' : 'student') as 'teacher' | 'student',
+          attentionScore: screenPresenter.attentionScore,
+          confusionScore: screenPresenter.confusionScore,
+          isMuted: screenPresenter.isMuted,
+          isCameraOff: screenPresenter.isCameraOff,
+          isScreenSharing: true,
+          stream: screenPresenter.stream,
+        }
+      : {
+          peerId: user?.id,
+          name: `${user?.name || 'Instructor'} (You)`,
+          role: 'teacher' as const,
+          attentionScore: metrics.attentionScore,
+          confusionScore: metrics.confusionScore,
+          isMuted: !isMicOn,
+          isCameraOff: !isCameraOn,
+          isScreenSharing: false,
+          stream: localStream,
+        }
+    : spotlightPeer
+    ? {
+        peerId: spotlightPeer.id,
+        name: spotlightPeer.name,
+        role: (spotlightPeer.role === 'teacher' ? 'teacher' : 'student') as 'teacher' | 'student',
+        attentionScore: spotlightPeer.attentionScore,
+        confusionScore: spotlightPeer.confusionScore,
+        isMuted: spotlightPeer.isMuted,
+        isCameraOff: spotlightPeer.isCameraOff || (!spotlightPeer.stream && !spotlightPeer.isScreenSharing),
+        isScreenSharing: spotlightPeer.isScreenSharing,
+        stream: spotlightPeer.stream,
+      }
+    : {
+        peerId: undefined,
+        name: instructorName || 'Instructor',
+        role: 'teacher' as const,
+        attentionScore: 98,
+        confusionScore: 10,
+        isMuted: false,
+        isCameraOff: true, // Displays instructor avatar with status instead of a black video tile!
+        isScreenSharing: false,
+        stream: null,
+      }
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden flex-col">
       {/* Active Screen Sharing Alert Banner */}
@@ -807,11 +987,14 @@ export default function ClassroomMeetingPage() {
         <div className="flex-1 p-4 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-y-auto">
           {/* Main Spotlight Tile (Instructor / Screen Presenter) */}
           <VideoTile
-            name={instructorName || 'Instructor'}
-            role="teacher"
-            attentionScore={isTeacher ? metrics.attentionScore : 98}
-            isMuted={false}
-            isScreenSharing={peers.some((p) => p.role === 'teacher' && p.isScreenSharing)}
+            name={spotlightProps.name}
+            role={spotlightProps.role}
+            attentionScore={spotlightProps.attentionScore}
+            confusionScore={spotlightProps.confusionScore}
+            isMuted={spotlightProps.isMuted}
+            isCameraOff={spotlightProps.isCameraOff}
+            isScreenSharing={spotlightProps.isScreenSharing}
+            stream={spotlightProps.stream}
             className="md:col-span-2 h-72 md:h-full min-h-[320px]"
           />
 
@@ -828,27 +1011,30 @@ export default function ClassroomMeetingPage() {
               isHandRaised={isHandRaised}
               isScreenSharing={isScreenSharing}
               isLocalUser={true}
+              stream={localStream}
               videoRef={videoRef}
               canvasRef={canvasRef}
               className="h-44"
             />
 
-            {/* Real Connected Peer Tiles */}
-            {peers.map((p) => (
-              <VideoTile
-                key={p.id}
-                name={p.name}
-                role={p.role === 'teacher' ? 'teacher' : 'student'}
-                attentionScore={p.attentionScore}
-                confusionScore={p.confusionScore}
-                isHandRaised={p.isHandRaised}
-                isMuted={p.isMuted}
-                isCameraOff={p.isCameraOff}
-                isScreenSharing={p.isScreenSharing}
-                stream={p.stream}
-                className="h-44"
-              />
-            ))}
+            {/* Real Connected Peer Tiles (Excluding the Spotlighted Peer) */}
+            {peers
+              .filter((p) => p.id !== spotlightProps.peerId)
+              .map((p) => (
+                <VideoTile
+                  key={p.id}
+                  name={p.name}
+                  role={p.role === 'teacher' ? 'teacher' : 'student'}
+                  attentionScore={p.attentionScore}
+                  confusionScore={p.confusionScore}
+                  isHandRaised={p.isHandRaised}
+                  isMuted={p.isMuted}
+                  isCameraOff={p.isCameraOff}
+                  isScreenSharing={p.isScreenSharing}
+                  stream={p.stream}
+                  className="h-44"
+                />
+              ))}
           </div>
         </div>
 

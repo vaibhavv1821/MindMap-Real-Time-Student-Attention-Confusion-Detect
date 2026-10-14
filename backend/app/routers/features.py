@@ -157,6 +157,24 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                 }, room_key, exclude=websocket)
                 continue
 
+            # Query existing peers in the classroom
+            elif msg_type == "get_peers":
+                existing_peers = []
+                for ws in manager.active_rooms.get(room_key, []):
+                    if ws != websocket:
+                        info = manager.get_user_info(ws)
+                        if info and info.get("user_id"):
+                            existing_peers.append({
+                                "peer_id": info["user_id"],
+                                "peer_name": info.get("user_name", "User"),
+                                "peer_role": info.get("user_role", "student"),
+                            })
+                await websocket.send_json({
+                    "type": "room_peers",
+                    "peers": existing_peers,
+                })
+                continue
+
             # 2. Classroom Chat Message
             elif msg_type == "chat_message":
                 text = str(data.get("text", "")).strip()

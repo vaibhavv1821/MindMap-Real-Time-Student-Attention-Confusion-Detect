@@ -118,17 +118,19 @@ export class AIDetectorService {
   public async start(
     video: HTMLVideoElement,
     canvas: HTMLCanvasElement,
-    onMetrics: AIMetricsCallback
+    onMetrics: AIMetricsCallback,
+    existingStream?: MediaStream | null
   ): Promise<boolean> {
     this.videoElement = video
     this.canvasElement = canvas
     this.callback = onMetrics
     this.isRunning = true
 
-    // 1. Request Webcam Stream
+    // 1. Setup Webcam Stream (Reuses shared stream to prevent camera device lock contention)
     try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
+      let stream = existingStream || (video.srcObject as MediaStream | null)
+      if (!stream && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 640 },
             height: { ideal: 480 },
@@ -136,8 +138,17 @@ export class AIDetectorService {
           },
           audio: false,
         })
-        this.videoElement.srcObject = stream
-        await this.videoElement.play()
+      }
+
+      if (stream) {
+        if (this.videoElement.srcObject !== stream) {
+          this.videoElement.srcObject = stream
+        }
+        try {
+          await this.videoElement.play()
+        } catch {
+          // Handled on user interaction
+        }
         this.cameraStatus = 'ACTIVE'
       } else {
         this.cameraStatus = 'UNAVAILABLE'
@@ -170,20 +181,34 @@ export class AIDetectorService {
 
         this.faceMesh.onResults(this.onMediaPipeResults)
 
-        if (typeof CameraConstructor === 'function' && this.videoElement) {
-          this.camera = new CameraConstructor(this.videoElement, {
-            onFrame: async () => {
-              if (this.isRunning && this.faceMesh && this.videoElement) {
-                await this.faceMesh.send({ image: this.videoElement })
-              }
-            },
-            width: 640,
-            height: 480,
-          })
-          await this.camera.start()
-          this.useMediaPipe = true
-          console.log('[MindMap AI] Real-time MediaPipe Face Mesh initialized successfully.')
+        // Native resilient frame pump from video element (avoids duplicate getUserMedia in camera_utils)
+        let isProcessing = false
+        const pumpFrame = async () => {
+          if (!this.isRunning) return
+          if (
+            this.faceMesh &&
+            this.videoElement &&
+            !this.videoElement.paused &&
+            this.videoElement.readyState >= 2 &&
+            !isProcessing
+          ) {
+            isProcessing = true
+            try {
+              await this.faceMesh.send({ image: this.videoElement })
+            } catch {
+              // Frame dropped or WebGL busy
+            } finally {
+              isProcessing = false
+            }
+          }
+          if (this.isRunning) {
+            this.animationFrameId = requestAnimationFrame(pumpFrame)
+          }
         }
+
+        this.animationFrameId = requestAnimationFrame(pumpFrame)
+        this.useMediaPipe = true
+        console.log('[MindMap AI] Real-time MediaPipe Face Mesh initialized successfully with native frame pump.')
       } catch (err) {
         console.warn('[MindMap AI] MediaPipe initialization error. Using local fallback loop:', err)
         this.useMediaPipe = false
@@ -227,11 +252,7 @@ export class AIDetectorService {
       this.faceMesh = null
     }
 
-    if (this.videoElement && this.videoElement.srcObject) {
-      const stream = this.videoElement.srcObject as MediaStream
-      stream.getTracks().forEach((track) => track.stop())
-      this.videoElement.srcObject = null
-    }
+    // Note: Do not stop stream tracks if owned by WebRTC / parent component
     this.temporalBuffer.reset()
     this.cameraStatus = 'OFFLINE'
   }

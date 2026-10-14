@@ -38,15 +38,47 @@ export const VideoTile = ({
   const targetVideoRef = videoRef || localVideoRef
 
   useEffect(() => {
-    if (targetVideoRef.current && stream !== undefined) {
-      targetVideoRef.current.srcObject = stream
-      if (!isLocalUser) {
-        targetVideoRef.current.play().catch((err) => {
-          console.warn('[VideoTile] Autoplay failed, waiting for user gesture:', err)
-        })
+    const el = targetVideoRef.current
+    if (!el) return
+
+    if (stream) {
+      if (el.srcObject !== stream) {
+        el.srcObject = stream
       }
+      if (!isLocalUser) {
+        const playPromise = el.play()
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('[VideoTile] Autoplay pending user interaction:', err)
+            const handleUserGesture = () => {
+              if (targetVideoRef.current) {
+                targetVideoRef.current.play().catch(() => {})
+              }
+              window.removeEventListener('click', handleUserGesture)
+              window.removeEventListener('keydown', handleUserGesture)
+            }
+            window.addEventListener('click', handleUserGesture, { once: true })
+            window.addEventListener('keydown', handleUserGesture, { once: true })
+          })
+        }
+      }
+    } else if (stream === null) {
+      el.srcObject = null
     }
   }, [stream, isLocalUser, targetVideoRef])
+
+  useEffect(() => {
+    if (!stream) return
+    const handleTrackAdded = () => {
+      if (targetVideoRef.current && !isLocalUser) {
+        targetVideoRef.current.play().catch(() => {})
+      }
+    }
+    stream.addEventListener('addtrack', handleTrackAdded)
+    return () => {
+      stream.removeEventListener('addtrack', handleTrackAdded)
+    }
+  }, [stream, isLocalUser])
 
   return (
     <div
@@ -60,9 +92,15 @@ export const VideoTile = ({
           autoPlay
           playsInline
           muted={isLocalUser}
-          className={`w-full h-full object-cover transition-opacity duration-200 ${
+          className={`w-full h-full transition-opacity duration-200 ${
             isCameraOff ? 'opacity-0 pointer-events-none' : 'opacity-100'
-          } ${isScreenSharing ? 'object-contain transform-none' : 'transform -scale-x-100'}`}
+          } ${
+            isScreenSharing
+              ? 'object-contain transform-none'
+              : isLocalUser
+              ? 'object-cover transform -scale-x-100'
+              : 'object-cover transform-none'
+          }`}
         />
         {canvasRef && !isScreenSharing && !isCameraOff && (
           <canvas
@@ -76,7 +114,9 @@ export const VideoTile = ({
         {isCameraOff && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-slate-950 z-0">
             <Avatar name={name} size="lg" />
-            <span className="text-xs text-slate-400 font-medium">{name} (Camera Off)</span>
+            <span className="text-xs text-slate-400 font-medium">
+              {name} {stream === null && !isLocalUser ? '(Connecting / Offline)' : '(Camera Off)'}
+            </span>
           </div>
         )}
       </div>

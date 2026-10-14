@@ -141,6 +141,13 @@ export class WebRTCService {
       activeStream.getTracks().forEach((track) => {
         pc.addTrack(track, activeStream)
       })
+    } else {
+      try {
+        pc.addTransceiver('audio', { direction: 'sendrecv' })
+        pc.addTransceiver('video', { direction: 'sendrecv' })
+      } catch {
+        // Safe fallback
+      }
     }
 
     // ICE Candidate handler
@@ -181,6 +188,10 @@ export class WebRTCService {
   public async initiateOffer(peerId: string) {
     const pc = this.createPeerConnection(peerId)
     try {
+      if (pc.signalingState !== 'stable') {
+        console.warn(`[WebRTC] Cannot initiate offer for ${peerId} in state ${pc.signalingState}`)
+        return
+      }
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
       if (this.sendSignal) {
@@ -200,7 +211,19 @@ export class WebRTCService {
 
     try {
       if (signal.type === 'offer' && signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+        if (pc.signalingState !== 'stable') {
+          console.warn(`[WebRTC] Offer collision with ${peerId}, attempting rollback`)
+          try {
+            await Promise.all([
+              pc.setLocalDescription({ type: 'rollback' }),
+              pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)),
+            ])
+          } catch {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+          }
+        } else {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+        }
         await this.drainCandidateQueue(peerId, pc)
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
@@ -211,8 +234,10 @@ export class WebRTCService {
           })
         }
       } else if (signal.type === 'answer' && signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
-        await this.drainCandidateQueue(peerId, pc)
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
+          await this.drainCandidateQueue(peerId, pc)
+        }
       } else if (signal.type === 'candidate' && signal.candidate) {
         if (!pc.remoteDescription || !pc.remoteDescription.type) {
           if (!this.candidateQueue.has(peerId)) {
