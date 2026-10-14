@@ -1,7 +1,9 @@
 import os
+import re
 from contextlib import asynccontextmanager
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
@@ -38,7 +40,9 @@ app = FastAPI(
 origins: list[str] = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://mind-map-real-time-student-attention.vercel.app",
     "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
+    "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
 ]
 
 # Read from FRONTEND_URL or CORS_ORIGINS environment variables and settings
@@ -63,9 +67,39 @@ app.add_middleware(
     allow_origins=origins,
     allow_origin_regex=r"https:\/\/.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "*"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "DNT",
+        "Cache-Control",
+        "X-Mx-ReqToken",
+        "Keep-Alive",
+        "X-Requested-With",
+        "If-Modified-Since",
+        "*",
+    ],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"[MindMap] Unhandled exception: {exc}", exc_info=True)
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        if origin in origins or re.fullmatch(r"https:\/\/.*\.vercel\.app", origin):
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Check server logs for details."},
+        headers=headers,
+    )
+
 
 # Mount Routers
 app.include_router(auth.router)

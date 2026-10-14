@@ -82,3 +82,55 @@ def test_specific_production_preflight_login(client):
     assert "POST" in allow_methods or "*" in allow_methods
     allow_headers = resp.headers.get("access-control-allow-headers", "")
     assert "content-type" in allow_headers.lower() or "*" in allow_headers
+
+
+def test_local_preflight_register(client):
+    """Verify local development preflight for /auth/register from http://localhost:5173."""
+    origin = "http://localhost:5173"
+    resp = client.options(
+        "/auth/register",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == origin
+    assert resp.headers.get("access-control-allow-credentials") == "true"
+    allow_methods = resp.headers.get("access-control-allow-methods", "")
+    assert "POST" in allow_methods or "*" in allow_methods
+    allow_headers = resp.headers.get("access-control-allow-headers", "")
+    assert "content-type" in allow_headers.lower() or "*" in allow_headers
+
+
+def test_production_preflight_register(client):
+    """Verify production preflight for /auth/register from https://mind-map-real-time-student-attention.vercel.app."""
+    origin = "https://mind-map-real-time-student-attention.vercel.app"
+    resp = client.options(
+        "/auth/register",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, authorization",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == origin
+    assert resp.headers.get("access-control-allow-credentials") == "true"
+    allow_methods = resp.headers.get("access-control-allow-methods", "")
+    assert "POST" in allow_methods or "*" in allow_methods
+
+
+def test_cors_headers_on_post_auth(client):
+    """Verify that POST /auth/login returns CORS headers even on 401 Unauthorized."""
+    origin = "http://localhost:5173"
+    resp = client.post(
+        "/auth/login",
+        json={"email": "nonexistent@example.com", "password": "WrongPassword123!"},
+        headers={"Origin": origin},
+    )
+    assert resp.status_code == 401
+    assert resp.headers.get("access-control-allow-origin") == origin
+    assert resp.headers.get("access-control-allow-credentials") == "true"
+

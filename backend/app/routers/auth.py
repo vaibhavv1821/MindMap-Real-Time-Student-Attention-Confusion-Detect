@@ -15,7 +15,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(data: RegisterIn):
-    db = get_db()
+    try:
+        db = get_db()
+    except Exception as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Database unavailable: {e}")
     doc = {
         "full_name": data.full_name,
         "email": data.email,
@@ -27,6 +30,8 @@ async def register(data: RegisterIn):
         result = await db["users"].insert_one(doc)
     except DuplicateKeyError:
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Registration failed: {e}")
 
     return UserOut(id=str(result.inserted_id), full_name=doc["full_name"],
                     email=doc["email"], role=doc["role"])
@@ -34,8 +39,14 @@ async def register(data: RegisterIn):
 
 @router.post("/login", response_model=TokenOut)
 async def login(data: LoginIn):
-    db = get_db()
-    user = await db["users"].find_one({"email": data.email})
+    try:
+        db = get_db()
+    except Exception as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Database unavailable: {e}")
+    try:
+        user = await db["users"].find_one({"email": data.email})
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database query failed: {e}")
     if not user or not verify_password(data.password, user["password_hash"]):
         # Same error for "no such user" and "wrong password" — don't leak which one.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")

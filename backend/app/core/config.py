@@ -29,16 +29,16 @@ class Settings(BaseSettings):
     )
 
     frontend_url: str = Field(
-        default="https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
+        default="https://mind-map-real-time-student-attention.vercel.app",
         validation_alias=AliasChoices("FRONTEND_URL", "frontend_url"),
     )
     cors_origins: Union[list[str], str] = Field(
         default_factory=lambda: [
-            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
-            "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
-            "https://mind-map-real-time-student-attention.vercel.app",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "https://mind-map-real-time-student-attention.vercel.app",
+            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
+            "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
             "http://localhost:4173",
@@ -48,11 +48,11 @@ class Settings(BaseSettings):
 
     def get_cors_origins(self) -> list[str]:
         origins: list[str] = [
-            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
-            "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
-            "https://mind-map-real-time-student-attention.vercel.app",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "https://mind-map-real-time-student-attention.vercel.app",
+            "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
+            "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
         ]
         if isinstance(self.cors_origins, str):
             try:
