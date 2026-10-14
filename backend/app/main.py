@@ -156,6 +156,25 @@ async def health_db():
     }
 
 
+@app.get("/working")
+@app.get("/api/working")
+async def working():
+    """Simple working check endpoint — confirms the API is up and serving requests."""
+    return {
+        "status": "WORKING",
+        "message": "MindMap API is up and running 🚀",
+        "system": "MindMap ~ Real-Time Student Attention & Confusion Detector",
+        "version": "1.0.0",
+        "endpoints": {
+            "docs": "/docs",
+            "health": "/health",
+            "database": "/health/db",
+            "ml_info": "/api/ml/info",
+            "features_info": "/api/features/info",
+        },
+    }
+
+
 # Top-level WebSocket route for ws://localhost:8000/ws
 @app.websocket("/ws")
 @app.websocket("/ws/telemetry")
