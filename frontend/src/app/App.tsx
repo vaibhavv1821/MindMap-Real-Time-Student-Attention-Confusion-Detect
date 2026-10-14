@@ -1,10 +1,13 @@
 import Providers from '@/app/Providers'
 import Router from '@/app/Router'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 
 export default function App() {
   return (
-    <Providers>
-      <Router />
-    </Providers>
+    <ErrorBoundary>
+      <Providers>
+        <Router />
+      </Providers>
+    </ErrorBoundary>
   )
 }

@@ -181,14 +181,31 @@ async def join_class(
 
     class_id = str(class_doc["_id"])
 
-    # Prevent duplicate active enrollment
+    # Prevent duplicate active enrollment - return existing active enrollment idempotently
     existing = await db["enrollments"].find_one({
         "class_id": class_id,
         "student_id": student_id,
     })
     if existing:
         if existing.get("status") == EnrollmentStatus.ACTIVE.value:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Already enrolled in this class")
+            enrolled_at_val = existing.get("enrolled_at")
+            if isinstance(enrolled_at_val, datetime):
+                enrolled_at_str = enrolled_at_val.isoformat()
+            elif isinstance(enrolled_at_val, str):
+                enrolled_at_str = enrolled_at_val
+            else:
+                enrolled_at_str = datetime.now(timezone.utc).isoformat()
+            return EnrollmentOut(
+                id=str(existing["_id"]),
+                class_id=class_id,
+                class_code=class_doc["class_code"],
+                class_name=class_doc["name"],
+                subject=class_doc["subject"],
+                teacher_name=class_doc["teacher_name"],
+                status=EnrollmentStatus.ACTIVE,
+                enrolled_at=enrolled_at_str,
+                is_live=class_doc.get("status") == ClassStatus.LIVE.value,
+            )
         # Reactivate dropped enrollment
         await db["enrollments"].update_one(
             {"_id": existing["_id"]},

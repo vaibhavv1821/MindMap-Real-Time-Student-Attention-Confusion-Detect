@@ -138,13 +138,16 @@ def test_student_join_and_roster_flow(client, teacher_auth, student_auth):
     assert enrollment["class_id"] == class_id
     assert enrollment["class_code"] == code
 
-    # 3. Duplicate enrollment rejected
+    # 3. Duplicate enrollment is idempotent (returns existing active enrollment)
     dup_res = client.post(
         "/api/classes/join",
         json={"class_code": code},
         headers={"Authorization": f"Bearer {student_auth['token']}"},
     )
-    assert dup_res.status_code == 409
+    assert dup_res.status_code in (200, 201)
+    dup_data = dup_res.json()
+    assert dup_data["class_id"] == class_id
+    assert dup_data["class_code"] == code
 
     # 4. Student sees class in their enrolled list
     std_classes = client.get(

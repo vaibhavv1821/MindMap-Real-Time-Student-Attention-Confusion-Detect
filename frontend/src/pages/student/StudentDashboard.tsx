@@ -186,9 +186,11 @@ export default function StudentDashboard() {
                       </Button>
                     </Link>
                   ) : (
-                    <Button variant="outline" size="sm" className="w-full" disabled>
-                      Waiting for Instructor
-                    </Button>
+                    <Link to={`/student/class/${c.class_code}`}>
+                      <Button variant="outline" size="sm" className="w-full" leftIcon={<Icons.Video size={14} />}>
+                        Enter Classroom
+                      </Button>
+                    </Link>
                   )}
                 </div>
               </div>

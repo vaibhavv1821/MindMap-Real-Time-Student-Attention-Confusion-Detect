@@ -40,6 +40,7 @@ import AdminSettingsPage from '@/pages/admin/AdminSettingsPage'
 
 // Error Pages
 import NotFoundPage from '@/pages/errors/NotFoundPage'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -110,7 +111,9 @@ export default function Router() {
           path="/student/class/:classCode"
           element={
             <ProtectedRoute allowedRoles={['student', 'teacher', 'admin']}>
-              <ClassroomMeetingPage />
+              <ErrorBoundary>
+                <ClassroomMeetingPage />
+              </ErrorBoundary>
             </ProtectedRoute>
           }
         />
@@ -236,7 +239,9 @@ export default function Router() {
           path="/classroom/:code"
           element={
             <ProtectedRoute allowedRoles={['teacher', 'student', 'admin']}>
-              <ClassroomMeetingPage />
+              <ErrorBoundary>
+                <ClassroomMeetingPage />
+              </ErrorBoundary>
             </ProtectedRoute>
           }
         />

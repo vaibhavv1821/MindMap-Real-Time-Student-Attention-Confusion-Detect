@@ -104,9 +104,11 @@ export default function StudentClassesPage() {
                     </Button>
                   </Link>
                 ) : (
-                  <Button variant="outline" size="sm" className="w-full" disabled>
-                    Scheduled Session
-                  </Button>
+                  <Link to={`/student/class/${c.class_code}`} className="w-full">
+                    <Button variant="outline" size="sm" className="w-full" leftIcon={<Icons.Video size={14} />}>
+                      Enter Classroom
+                    </Button>
+                  </Link>
                 )}
               </div>
             </Card>

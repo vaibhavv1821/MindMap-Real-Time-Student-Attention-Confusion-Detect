@@ -38,10 +38,13 @@ export const JoinClassroomModal = ({ isOpen, onClose, onClassJoined }: JoinClass
       onClose()
 
       if (onClassJoined) {
-        onClassJoined(enrollment)
-      } else {
-        navigate(`/classroom/${cleanCode.toLowerCase()}`)
+        try {
+          onClassJoined(enrollment)
+        } catch (e) {
+          console.warn('[JoinModal] onClassJoined callback error:', e)
+        }
       }
+      navigate(`/student/class/${cleanCode}`)
     } catch (err: any) {
       setIsJoining(false)
       showToast({

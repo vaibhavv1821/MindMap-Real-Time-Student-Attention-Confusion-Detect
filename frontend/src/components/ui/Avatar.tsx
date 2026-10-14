@@ -29,10 +29,15 @@ export const Avatar = ({
     away: 'bg-warning',
   }
 
-  const getInitials = (n: string) => {
-    const parts = n.trim().split(' ')
-    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
-    return n.slice(0, 2).toUpperCase()
+  const getInitials = (n?: string) => {
+    if (!n || typeof n !== 'string') return 'U'
+    const clean = n.trim()
+    if (!clean) return 'U'
+    const parts = clean.split(/\s+/).filter(Boolean)
+    if (parts.length >= 2 && parts[0][0] && parts[1][0]) {
+      return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
+    }
+    return clean.slice(0, 2).toUpperCase()
   }
 
   return (
