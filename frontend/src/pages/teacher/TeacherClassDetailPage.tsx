@@ -116,14 +116,24 @@ export default function TeacherClassDetailPage() {
 
                 <div className="flex flex-wrap items-center gap-3">
                   {classData.status === 'LIVE' ? (
-                    <Button
-                      variant="glow"
-                      size="md"
-                      leftIcon={<Icons.Video size={16} />}
-                      onClick={() => navigate(`/teacher/classes/${classData.id}/live`)}
-                    >
-                      Enter Live Monitoring
-                    </Button>
+                    <>
+                      <Button
+                        variant="glow"
+                        size="md"
+                        leftIcon={<Icons.Video size={16} />}
+                        onClick={() => navigate(`/teacher/classes/${classData.id}/live`)}
+                      >
+                        Enter Live Monitoring
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="md"
+                        leftIcon={<Icons.Users size={16} />}
+                        onClick={() => navigate(`/classroom/${classData.class_code}`)}
+                      >
+                        Join Video Meeting
+                      </Button>
+                    </>
                   ) : (
                     <Button
                       variant="primary"

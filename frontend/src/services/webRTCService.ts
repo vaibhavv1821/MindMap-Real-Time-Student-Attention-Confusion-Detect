@@ -50,6 +50,8 @@ export class WebRTCService {
     this.onPeerRemove = onPeerRemove
   }
 
+  private remoteStreams: Map<string, MediaStream> = new Map()
+
   public async startLocalMedia(): Promise<MediaStream | null> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -65,12 +67,35 @@ export class WebRTCService {
         },
       })
       this.localStream = stream
+
+      // Immediately attach tracks to any peer connections that were already initialized
+      this.peerConnections.forEach((pc) => {
+        const senders = pc.getSenders()
+        stream.getTracks().forEach((track) => {
+          const alreadyAdded = senders.some((s) => s.track && s.track.kind === track.kind)
+          if (!alreadyAdded) {
+            pc.addTrack(track, stream)
+          }
+        })
+      })
+
       return stream
     } catch (err: any) {
       console.warn('[WebRTC] Camera+Mic permission failed, attempting audio only:', err)
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
         this.localStream = audioStream
+
+        this.peerConnections.forEach((pc) => {
+          const senders = pc.getSenders()
+          audioStream.getTracks().forEach((track) => {
+            const alreadyAdded = senders.some((s) => s.track && s.track.kind === track.kind)
+            if (!alreadyAdded) {
+              pc.addTrack(track, audioStream)
+            }
+          })
+        })
+
         return audioStream
       } catch (audioErr) {
         console.error('[WebRTC] Audio & video permission denied:', audioErr)
@@ -130,8 +155,16 @@ export class WebRTCService {
 
     // Remote Track handler
     pc.ontrack = (event) => {
-      if (event.streams && event.streams[0] && this.onRemoteStream) {
-        this.onRemoteStream(peerId, event.streams[0])
+      let stream = event.streams && event.streams[0]
+      if (!stream) {
+        stream = this.remoteStreams.get(peerId) || new MediaStream()
+        stream.addTrack(event.track)
+        this.remoteStreams.set(peerId, stream)
+      } else {
+        this.remoteStreams.set(peerId, stream)
+      }
+      if (this.onRemoteStream) {
+        this.onRemoteStream(peerId, stream)
       }
     }
 
@@ -287,6 +320,7 @@ export class WebRTCService {
       this.peerConnections.delete(peerId)
     }
     this.candidateQueue.delete(peerId)
+    this.remoteStreams.delete(peerId)
     if (this.onPeerRemove) {
       this.onPeerRemove(peerId)
     }
@@ -303,5 +337,6 @@ export class WebRTCService {
     this.peerConnections.forEach((pc) => pc.close())
     this.peerConnections.clear()
     this.candidateQueue.clear()
+    this.remoteStreams.clear()
   }
 }

@@ -40,8 +40,13 @@ export const VideoTile = ({
   useEffect(() => {
     if (targetVideoRef.current && stream !== undefined) {
       targetVideoRef.current.srcObject = stream
+      if (!isLocalUser) {
+        targetVideoRef.current.play().catch((err) => {
+          console.warn('[VideoTile] Autoplay failed, waiting for user gesture:', err)
+        })
+      }
     }
-  }, [stream, targetVideoRef])
+  }, [stream, isLocalUser, targetVideoRef])
 
   return (
     <div
@@ -49,32 +54,32 @@ export const VideoTile = ({
         isHandRaised ? 'ring-2 ring-amber-500' : ''
       } ${isScreenSharing ? 'ring-2 ring-emerald-500' : ''} ${className}`}
     >
-      {!isCameraOff ? (
-        <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
-          <video
-            ref={targetVideoRef}
-            autoPlay
-            playsInline
-            muted={isLocalUser}
-            className={`w-full h-full object-cover ${
-              isScreenSharing ? 'object-contain transform-none' : 'transform -scale-x-100'
-            }`}
+      <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
+        <video
+          ref={targetVideoRef}
+          autoPlay
+          playsInline
+          muted={isLocalUser}
+          className={`w-full h-full object-cover transition-opacity duration-200 ${
+            isCameraOff ? 'opacity-0 pointer-events-none' : 'opacity-100'
+          } ${isScreenSharing ? 'object-contain transform-none' : 'transform -scale-x-100'}`}
+        />
+        {canvasRef && !isScreenSharing && !isCameraOff && (
+          <canvas
+            ref={canvasRef}
+            width={320}
+            height={240}
+            className="absolute inset-0 w-full h-full pointer-events-none transform -scale-x-100 opacity-60"
           />
-          {canvasRef && !isScreenSharing && (
-            <canvas
-              ref={canvasRef}
-              width={320}
-              height={240}
-              className="absolute inset-0 w-full h-full pointer-events-none transform -scale-x-100 opacity-60"
-            />
-          )}
-        </div>
-      ) : (
-        <div className="flex flex-col items-center gap-2 p-4 text-center">
-          <Avatar name={name} size="lg" />
-          <span className="text-xs text-slate-400 font-medium">{name} (Camera Muted)</span>
-        </div>
-      )}
+        )}
+
+        {isCameraOff && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-slate-950 z-0">
+            <Avatar name={name} size="lg" />
+            <span className="text-xs text-slate-400 font-medium">{name} (Camera Off)</span>
+          </div>
+        )}
+      </div>
 
       {/* Top Bar Overlay */}
       <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between z-10 pointer-events-none">
