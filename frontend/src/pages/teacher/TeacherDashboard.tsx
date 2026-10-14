@@ -79,8 +79,26 @@ export default function TeacherDashboard() {
       .catch(() => {})
 
     // Connect to WebSocket for this classroom code
-    const wsUrl = `${env.wsBaseUrl}/${selectedClass.class_code}`
-    const ws = new WebSocket(wsUrl)
+    let wsUrl = `${env.wsBaseUrl}/${selectedClass.class_code}`
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
+      wsUrl = wsUrl.replace(/^ws:\/\//i, 'wss://')
+    }
+
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch (err) {
+      console.warn('[TeacherDashboard] WebSocket connection failed on', wsUrl, err)
+      if (wsUrl.startsWith('ws://')) {
+        try {
+          ws = new WebSocket(wsUrl.replace(/^ws:\/\//i, 'wss://'))
+        } catch {
+          return
+        }
+      } else {
+        return
+      }
+    }
     wsRef.current = ws
 
     ws.onmessage = (event) => {

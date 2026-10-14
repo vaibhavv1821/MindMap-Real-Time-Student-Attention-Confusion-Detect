@@ -192,8 +192,21 @@ export default function TeacherLiveMonitoringPage() {
   // 2. Connect to Classroom WebSocket Infrastructure
   const connectWebSocket = (roomCode: string) => {
     try {
-      const wsUrl = `${env.wsBaseUrl}/${roomCode}`
-      const ws = new WebSocket(wsUrl)
+      let wsUrl = `${env.wsBaseUrl}/${roomCode}`
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
+        wsUrl = wsUrl.replace(/^ws:\/\//i, 'wss://')
+      }
+
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch (innerErr) {
+        if (wsUrl.startsWith('ws://')) {
+          ws = new WebSocket(wsUrl.replace(/^ws:\/\//i, 'wss://'))
+        } else {
+          throw innerErr
+        }
+      }
       wsRef.current = ws
 
       ws.onopen = () => {

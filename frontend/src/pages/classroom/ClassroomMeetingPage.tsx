@@ -317,8 +317,29 @@ export default function ClassroomMeetingPage() {
 
     function connectWs() {
       if (!isMounted || !targetCode || !user) return
-      const wsUrl = `${env.wsBaseUrl}/${targetCode}`
-      const ws = new WebSocket(wsUrl)
+      let wsUrl = `${env.wsBaseUrl}/${targetCode}`
+
+      // On HTTPS, strictly enforce wss:// to prevent browser SecurityError (Mixed Content)
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
+        wsUrl = wsUrl.replace(/^ws:\/\//i, 'wss://')
+      }
+
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch (err: any) {
+        console.warn('[MindMap] WebSocket connection error on', wsUrl, err)
+        if (wsUrl.startsWith('ws://')) {
+          try {
+            ws = new WebSocket(wsUrl.replace(/^ws:\/\//i, 'wss://'))
+          } catch (err2) {
+            console.error('[MindMap] Secure WebSocket fallback failed:', err2)
+            return
+          }
+        } else {
+          return
+        }
+      }
       wsRef.current = ws
 
       ws.onopen = () => {
