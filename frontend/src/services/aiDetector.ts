@@ -110,6 +110,9 @@ export class AIDetectorService {
   private fps: number = 30
   private frameCount: number = 0
   private lastFpsCalcTime: number = Date.now()
+  private pumpTicks: number = 0
+  private consecutivePumpErrors: number = 0
+  private totalProcessedFrames: number = 0
 
   // Base state tracking
   private currentAttention: number = 88
@@ -117,7 +120,7 @@ export class AIDetectorService {
 
   public async start(
     video: HTMLVideoElement,
-    canvas: HTMLCanvasElement,
+    canvas: HTMLCanvasElement | null,
     onMetrics: AIMetricsCallback,
     existingStream?: MediaStream | null
   ): Promise<boolean> {
@@ -125,6 +128,9 @@ export class AIDetectorService {
     this.canvasElement = canvas
     this.callback = onMetrics
     this.isRunning = true
+    this.pumpTicks = 0
+    this.consecutivePumpErrors = 0
+    this.totalProcessedFrames = 0
 
     // 1. Setup Webcam Stream (Reuses shared stream to prevent camera device lock contention)
     try {
@@ -147,7 +153,7 @@ export class AIDetectorService {
         try {
           await this.videoElement.play()
         } catch {
-          // Handled on user interaction
+          // Handled on user interaction or autoplay
         }
         this.cameraStatus = 'ACTIVE'
       } else {
@@ -181,34 +187,70 @@ export class AIDetectorService {
 
         this.faceMesh.onResults(this.onMediaPipeResults)
 
+        // Pre-initialize MediaPipe neural graph
+        try {
+          console.log('[MindMap AI] Initializing MediaPipe Face Mesh graph...')
+          await this.faceMesh.initialize()
+          console.log('[MindMap AI] MediaPipe Face Mesh initialized successfully.')
+        } catch (meshInitErr) {
+          console.warn('[MindMap AI] MediaPipe initialize() warning (will retry on first frame):', meshInitErr)
+        }
+
         // Native resilient frame pump from video element (avoids duplicate getUserMedia in camera_utils)
         let isProcessing = false
         const pumpFrame = async () => {
           if (!this.isRunning) return
-          if (
-            this.faceMesh &&
-            this.videoElement &&
-            !this.videoElement.paused &&
-            this.videoElement.readyState >= 2 &&
-            !isProcessing
-          ) {
+          this.pumpTicks++
+
+          const videoEl = this.videoElement
+          if (videoEl && videoEl.paused) {
+            try {
+              await videoEl.play()
+            } catch {
+              // Waiting for user gesture or loadedmetadata
+            }
+          }
+
+          const hasValidDims = !!(videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0)
+          const isReady = !!(videoEl && !videoEl.paused && videoEl.readyState >= 2 && hasValidDims)
+
+          if (this.pumpTicks % 120 === 0) {
+            console.log(
+              `[MindMap AI Pump] Ticks: ${this.pumpTicks} | Ready: ${isReady} | ` +
+              `Video: ${videoEl?.videoWidth}x${videoEl?.videoHeight} (readyState: ${videoEl?.readyState}, paused: ${videoEl?.paused}) | ` +
+              `FaceMesh: ${!!this.faceMesh}`
+            )
+          }
+
+          if (this.faceMesh && isReady && !isProcessing) {
             isProcessing = true
             try {
-              await this.faceMesh.send({ image: this.videoElement })
-            } catch {
-              // Frame dropped or WebGL busy
+              await this.faceMesh.send({ image: videoEl })
+              this.consecutivePumpErrors = 0
+            } catch (err) {
+              this.consecutivePumpErrors++
+              if (this.consecutivePumpErrors <= 3 || this.consecutivePumpErrors % 60 === 0) {
+                console.error(`[MindMap AI Pump] faceMesh.send() error (failure #${this.consecutivePumpErrors}):`, err)
+              }
+              if (this.consecutivePumpErrors >= 30) {
+                console.warn('[MindMap AI Pump] 30 consecutive FaceMesh frame errors. Switching to diagnostic loop.')
+                this.useMediaPipe = false
+                this.processDiagnosticLoop()
+                return
+              }
             } finally {
               isProcessing = false
             }
           }
-          if (this.isRunning) {
+
+          if (this.isRunning && this.useMediaPipe) {
             this.animationFrameId = requestAnimationFrame(pumpFrame)
           }
         }
 
         this.animationFrameId = requestAnimationFrame(pumpFrame)
         this.useMediaPipe = true
-        console.log('[MindMap AI] Real-time MediaPipe Face Mesh initialized successfully with native frame pump.')
+        console.log('[MindMap AI] Real-time MediaPipe Face Mesh running with native resilient frame pump.')
       } catch (err) {
         console.warn('[MindMap AI] MediaPipe initialization error. Using local fallback loop:', err)
         this.useMediaPipe = false
@@ -393,6 +435,20 @@ export class AIDetectorService {
       cameraStatus: this.cameraStatus,
       fps: this.fps || 30,
       latencyMs,
+    }
+
+    this.totalProcessedFrames++
+    if (this.totalProcessedFrames % 60 === 0) {
+      console.log(
+        `[MindMap AI Telemetry] Frame #${this.totalProcessedFrames} | ` +
+        `Face: ${isFaceFound ? 'TRACKED' : 'NO_FACE'} | ` +
+        `Landmarks: ${vector.landmark_count} | ` +
+        `Temporal Buffer: ${this.temporalBuffer.getSamples().length} samples (${temporalFeatures.valid_samples_count} valid) | ` +
+        `Attention: ${attentionScore}% [${mlPrediction.attention_state}] | ` +
+        `Confusion: ${confusionScore}% [${mlPrediction.confusion_state}] | ` +
+        `EAR: ${vector.ear_avg.toFixed(3)} | Gaze: ${vector.gaze_direction} (${vector.gaze_deviation.toFixed(2)}) | ` +
+        `FPS: ${this.fps || 30}`
+      )
     }
 
     if (this.callback) {

@@ -45,10 +45,10 @@ export const VideoTile = ({
       if (el.srcObject !== stream) {
         el.srcObject = stream
       }
-      if (!isLocalUser) {
-        const playPromise = el.play()
-        if (playPromise !== undefined) {
-          playPromise.catch((err) => {
+      const playPromise = el.play()
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          if (!isLocalUser) {
             console.warn('[VideoTile] Autoplay pending user interaction:', err)
             const handleUserGesture = () => {
               if (targetVideoRef.current) {
@@ -59,8 +59,8 @@ export const VideoTile = ({
             }
             window.addEventListener('click', handleUserGesture, { once: true })
             window.addEventListener('keydown', handleUserGesture, { once: true })
-          })
-        }
+          }
+        })
       }
     } else if (stream === null) {
       el.srcObject = null
@@ -70,7 +70,7 @@ export const VideoTile = ({
   useEffect(() => {
     if (!stream) return
     const handleTrackAdded = () => {
-      if (targetVideoRef.current && !isLocalUser) {
+      if (targetVideoRef.current) {
         targetVideoRef.current.play().catch(() => {})
       }
     }
@@ -79,6 +79,9 @@ export const VideoTile = ({
       stream.removeEventListener('addtrack', handleTrackAdded)
     }
   }, [stream, isLocalUser])
+
+  const showVideo = !isCameraOff || isScreenSharing
+  const showAvatar = isCameraOff && !isScreenSharing
 
   return (
     <div
@@ -93,10 +96,10 @@ export const VideoTile = ({
           playsInline
           muted={isLocalUser}
           className={`w-full h-full transition-opacity duration-200 ${
-            isCameraOff ? 'opacity-0 pointer-events-none' : 'opacity-100'
+            showVideo ? 'opacity-100' : 'opacity-0 pointer-events-none'
           } ${
             isScreenSharing
-              ? 'object-contain transform-none'
+              ? 'object-contain transform-none bg-black'
               : isLocalUser
               ? 'object-cover transform -scale-x-100'
               : 'object-cover transform-none'
@@ -111,7 +114,7 @@ export const VideoTile = ({
           />
         )}
 
-        {isCameraOff && (
+        {showAvatar && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-slate-950 z-0">
             <Avatar name={name} size="lg" />
             <span className="text-xs text-slate-400 font-medium">

@@ -20,7 +20,10 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "mindmap_development_secret_key_change_in_production"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
+    access_token_expire_minutes: int = Field(
+        default=120,
+        validation_alias=AliasChoices("ACCESS_TOKEN_EXPIRE_MINUTES", "access_token_expire_minutes"),
+    )
     refresh_token_expire_days: int = 7
 
     port: int = Field(

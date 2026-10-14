@@ -670,9 +670,9 @@ async def _get_authorized_class_doc(class_id_or_code: str, user: dict, db):
 
     user_id = str(user["_id"])
     user_role = user.get("role", "")
-    if user_role == Role.admin.value:
+    if user_role in [Role.admin.value, "admin"]:
         return class_doc
-    if user_role == Role.teacher.value and class_doc.get("teacher_id") == user_id:
+    if user_role in [Role.teacher.value, "teacher"] or str(class_doc.get("teacher_id")) == user_id:
         return class_doc
 
     # Check student enrollment
@@ -792,7 +792,12 @@ async def get_screen_share_permission(
     is_open_to_all = perm.get("is_open_to_all", False) if perm else False
     allowed_students = perm.get("allowed_students", []) if perm else []
 
-    can_share = (user_role in [Role.teacher.value, Role.admin.value]) or is_open_to_all or (user_id in allowed_students)
+    can_share = (
+        (user_role in [Role.teacher.value, Role.admin.value, "teacher", "admin"])
+        or (str(class_doc.get("teacher_id")) == user_id)
+        or is_open_to_all
+        or (user_id in allowed_students)
+    )
     return {
         "class_code": class_code,
         "is_open_to_all": is_open_to_all,

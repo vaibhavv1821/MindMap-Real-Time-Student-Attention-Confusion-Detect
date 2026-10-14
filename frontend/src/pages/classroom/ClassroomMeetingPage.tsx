@@ -274,19 +274,29 @@ export default function ClassroomMeetingPage() {
           }
         }
       }
-      // Start AI Detection reusing the exact same stream (prevents Windows camera device lock collision)
-      if (videoRef.current && canvasRef.current) {
-        aiService.start(
-          videoRef.current,
-          canvasRef.current,
-          (newMetrics) => {
-            if (isMounted) {
-              setMetrics(newMetrics)
-            }
-          },
-          stream
-        )
+      // Start AI Detection with resilient DOM attachment retry (prevents Windows camera device lock collision)
+      const tryStartAI = () => {
+        if (!isMounted) return
+        const videoEl = videoRef.current
+        const canvasEl = canvasRef.current
+        if (videoEl) {
+          aiService.start(
+            videoEl,
+            canvasEl,
+            (newMetrics) => {
+              if (isMounted) {
+                setMetrics(newMetrics)
+              }
+            },
+            stream
+          ).catch((err) => {
+            console.error('[MindMap AI] Error starting aiService:', err)
+          })
+        } else {
+          setTimeout(tryStartAI, 100)
+        }
       }
+      tryStartAI()
     })
 
     return () => {
@@ -465,18 +475,38 @@ export default function ClassroomMeetingPage() {
 
           // D. Peer Media Status Change (mic, camera, screen share)
           else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== user.id) {
-            setPeers((prev) =>
-              prev.map((p) =>
+            setPeers((prev) => {
+              const exists = prev.some((p) => p.id === payload.peer_id)
+              if (!exists) {
+                const newPeer: PeerStudent = {
+                  id: payload.peer_id,
+                  name: payload.peer_name || 'User',
+                  email: '',
+                  role: payload.peer_role || 'student',
+                  attentionScore: 85,
+                  confusionScore: 15,
+                  isHandRaised: false,
+                  isCameraOff: !payload.is_camera_on,
+                  isMuted: !payload.is_mic_on,
+                  isScreenSharing: !!payload.is_screen_sharing,
+                  connectionStatus: 'connected',
+                  lastSeen: Date.now(),
+                  stream: null,
+                }
+                return [...prev, newPeer]
+              }
+              return prev.map((p) =>
                 p.id === payload.peer_id
                   ? {
                       ...p,
+                      role: payload.peer_role || p.role,
                       isCameraOff: !payload.is_camera_on,
                       isMuted: !payload.is_mic_on,
                       isScreenSharing: !!payload.is_screen_sharing,
                     }
                   : p
               )
-            )
+            })
           }
 
           // E. Peer Left Room
@@ -560,24 +590,33 @@ export default function ClassroomMeetingPage() {
     }
   }, [targetCode, user, isTeacher])
 
+  // Fresh refs for live state to decouple 2s telemetry timer from rapid metrics re-renders
+  const metricsRef = useRef(metrics)
+  metricsRef.current = metrics
+  const isHandRaisedRef = useRef(isHandRaised)
+  isHandRaisedRef.current = isHandRaised
+  const isCameraOnRef = useRef(isCameraOn)
+  isCameraOnRef.current = isCameraOn
+
   // 6. Emit Periodic Telemetry to WebSocket (every 2 seconds)
   useEffect(() => {
     const timer = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        const curMetrics = metricsRef.current
         wsRef.current.send(
           JSON.stringify({
             student_id: user.id,
             student_name: user.name,
             student_email: user.email,
-            attention_score: metrics.attentionScore,
-            confusion_score: metrics.confusionScore,
-            attention_state: metrics.mlPrediction.attention_state,
-            confusion_state: metrics.mlPrediction.confusion_state,
-            confidence: metrics.mlPrediction.confidence,
-            reasons: metrics.mlPrediction.reasons,
-            indicators: metrics.behaviouralIndicators,
-            is_hand_raised: isHandRaised,
-            connection_status: isCameraOn ? 'ONLINE' : 'CAMERA_MUTED',
+            attention_score: curMetrics.attentionScore,
+            confusion_score: curMetrics.confusionScore,
+            attention_state: curMetrics.mlPrediction.attention_state,
+            confusion_state: curMetrics.mlPrediction.confusion_state,
+            confidence: curMetrics.mlPrediction.confidence,
+            reasons: curMetrics.mlPrediction.reasons,
+            indicators: curMetrics.behaviouralIndicators,
+            is_hand_raised: isHandRaisedRef.current,
+            connection_status: isCameraOnRef.current ? 'ONLINE' : 'CAMERA_MUTED',
             timestamp_ms: Date.now(),
           })
         )
@@ -585,7 +624,7 @@ export default function ClassroomMeetingPage() {
     }, 2000)
 
     return () => clearInterval(timer)
-  }, [user, metrics, isHandRaised, isCameraOn])
+  }, [user])
 
   // 7. Chat Send Handler
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -647,6 +686,8 @@ export default function ClassroomMeetingPage() {
           type: 'peer_status',
           peer_id: user.id,
           peer_name: user.name,
+          peer_role: user.role,
+          user_role: user.role,
           is_camera_on: isCameraOn,
           is_mic_on: nextState,
           is_screen_sharing: isScreenSharing,
@@ -663,7 +704,7 @@ export default function ClassroomMeetingPage() {
     }
     if (!nextState && aiServiceRef.current) {
       aiServiceRef.current.stop()
-    } else if (nextState && aiServiceRef.current && videoRef.current && canvasRef.current) {
+    } else if (nextState && aiServiceRef.current && videoRef.current) {
       aiServiceRef.current.start(
         videoRef.current,
         canvasRef.current,
@@ -671,7 +712,9 @@ export default function ClassroomMeetingPage() {
           setMetrics(newMetrics)
         },
         localStream
-      )
+      ).catch((err) => {
+        console.error('[MindMap AI] Error restarting AI on camera toggle:', err)
+      })
     }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
       wsRef.current.send(
@@ -679,6 +722,8 @@ export default function ClassroomMeetingPage() {
           type: 'peer_status',
           peer_id: user.id,
           peer_name: user.name,
+          peer_role: user.role,
+          user_role: user.role,
           is_camera_on: nextState,
           is_mic_on: isMicOn,
           is_screen_sharing: isScreenSharing,
@@ -703,6 +748,8 @@ export default function ClassroomMeetingPage() {
             type: 'peer_status',
             peer_id: user.id,
             peer_name: user.name,
+            peer_role: user.role,
+            user_role: user.role,
             is_camera_on: isCameraOn,
             is_mic_on: isMicOn,
             is_screen_sharing: false,
@@ -730,6 +777,8 @@ export default function ClassroomMeetingPage() {
                 type: 'peer_status',
                 peer_id: user.id,
                 peer_name: user.name,
+                peer_role: user.role,
+                user_role: user.role,
                 is_camera_on: isCameraOn,
                 is_mic_on: isMicOn,
                 is_screen_sharing: false,
@@ -746,6 +795,8 @@ export default function ClassroomMeetingPage() {
               type: 'peer_status',
               peer_id: user.id,
               peer_name: user.name,
+              peer_role: user.role,
+              user_role: user.role,
               is_camera_on: isCameraOn,
               is_mic_on: isMicOn,
               is_screen_sharing: true,
@@ -883,7 +934,7 @@ export default function ClassroomMeetingPage() {
         attentionScore: spotlightPeer.attentionScore,
         confusionScore: spotlightPeer.confusionScore,
         isMuted: spotlightPeer.isMuted,
-        isCameraOff: spotlightPeer.isCameraOff || (!spotlightPeer.stream && !spotlightPeer.isScreenSharing),
+        isCameraOff: spotlightPeer.isScreenSharing ? false : (spotlightPeer.isCameraOff || !spotlightPeer.stream),
         isScreenSharing: spotlightPeer.isScreenSharing,
         stream: spotlightPeer.stream,
       }

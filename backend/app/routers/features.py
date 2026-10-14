@@ -128,8 +128,10 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                 is_authorized = False
                 class_doc = await db["classes"].find_one({"class_code": code_clean})
                 if class_doc:
-                    if user_role == "admin" or class_doc.get("teacher_id") == user_id:
+                    if user_role == "admin" or str(class_doc.get("teacher_id")) == str(user_id):
                         is_authorized = True
+                        if str(class_doc.get("teacher_id")) == str(user_id) and user_role != "admin":
+                            user_role = "teacher"
                     else:
                         enrolled = await db["enrollments"].find_one({
                             "class_id": str(class_doc["_id"]),
@@ -252,17 +254,27 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
 
             # 4. Media Device / Status changes (mic, camera, screen share)
             elif msg_type == "peer_status":
+                from app.db.mongodb import get_db
+                db = get_db()
+                code_clean = class_code.strip().upper()
+                class_doc = await db["classes"].find_one({"class_code": code_clean})
+
                 user_info = manager.get_user_info(websocket) or {}
                 peer_id = user_info.get("user_id") or str(data.get("peer_id", ""))
                 peer_name = user_info.get("user_name") or str(data.get("peer_name", "User"))
-                peer_role = user_info.get("user_role") or "student"
+                peer_role = user_info.get("user_role") or str(data.get("peer_role") or data.get("user_role") or "student")
                 is_sharing = bool(data.get("is_screen_sharing", False))
 
+                is_teacher_or_admin = (
+                    peer_role in ["teacher", "admin"]
+                    or (class_doc and str(class_doc.get("teacher_id")) == str(peer_id))
+                )
+                effective_role = "teacher" if (is_teacher_or_admin and peer_role != "admin") else peer_role
+
                 # Backend screen share permission enforcement:
-                if is_sharing and peer_role not in ["teacher", "admin"]:
-                    from app.db.mongodb import get_db
-                    db = get_db()
-                    code_clean = class_code.strip().upper()
+                # Teachers/admins are ALWAYS authorized to share screen.
+                # Student screen share setting (open_to_all) applies strictly to students.
+                if is_sharing and not is_teacher_or_admin:
                     perm = await db["screen_share_permissions"].find_one({"class_code": code_clean})
                     is_open = perm.get("is_open_to_all", False) if perm else False
                     allowed = perm.get("allowed_students", []) if perm else []
@@ -275,10 +287,16 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                             "message": "Screen sharing has not been granted by the teacher.",
                         })
 
+                if user_info:
+                    user_info["user_role"] = effective_role
+                    user_info["user_id"] = peer_id
+                    user_info["user_name"] = peer_name
+
                 await manager.broadcast({
                     "type": "peer_status",
                     "peer_id": peer_id,
                     "peer_name": peer_name,
+                    "peer_role": effective_role,
                     "is_camera_on": data.get("is_camera_on", True),
                     "is_mic_on": data.get("is_mic_on", True),
                     "is_screen_sharing": is_sharing,
@@ -288,8 +306,18 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
             # 5. Screen Share Permission updates (teacher controlled)
             elif msg_type == "screen_share_permission":
                 user_info = manager.get_user_info(websocket) or {}
-                user_role = user_info.get("user_role") or "student"
-                if user_role not in ["teacher", "admin"]:
+                peer_id = user_info.get("user_id") or str(data.get("peer_id", ""))
+                peer_role = user_info.get("user_role") or str(data.get("peer_role") or data.get("user_role") or "student")
+                from app.db.mongodb import get_db
+                db = get_db()
+                code_clean = class_code.strip().upper()
+                class_doc = await db["classes"].find_one({"class_code": code_clean})
+
+                is_teacher_or_admin = (
+                    peer_role in ["teacher", "admin"]
+                    or (class_doc and str(class_doc.get("teacher_id")) == str(peer_id))
+                )
+                if not is_teacher_or_admin:
                     await websocket.send_json({
                         "type": "permission_denied",
                         "action": "screen_share_permission",

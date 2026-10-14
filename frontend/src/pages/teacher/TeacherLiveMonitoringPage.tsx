@@ -416,6 +416,8 @@ export default function TeacherLiveMonitoringPage() {
           type: 'peer_status',
           peer_id: user.id,
           peer_name: user.name,
+          peer_role: 'teacher',
+          user_role: 'teacher',
           is_camera_on: isCameraOn,
           is_mic_on: nextState,
           is_screen_sharing: isScreenSharing,
@@ -436,6 +438,8 @@ export default function TeacherLiveMonitoringPage() {
           type: 'peer_status',
           peer_id: user.id,
           peer_name: user.name,
+          peer_role: 'teacher',
+          user_role: 'teacher',
           is_camera_on: nextState,
           is_mic_on: isMicOn,
           is_screen_sharing: isScreenSharing,
@@ -458,6 +462,8 @@ export default function TeacherLiveMonitoringPage() {
             type: 'peer_status',
             peer_id: user.id,
             peer_name: user.name,
+            peer_role: 'teacher',
+            user_role: 'teacher',
             is_camera_on: isCameraOn,
             is_mic_on: isMicOn,
             is_screen_sharing: false,
@@ -475,6 +481,8 @@ export default function TeacherLiveMonitoringPage() {
                 type: 'peer_status',
                 peer_id: user.id,
                 peer_name: user.name,
+                peer_role: 'teacher',
+                user_role: 'teacher',
                 is_camera_on: isCameraOn,
                 is_mic_on: isMicOn,
                 is_screen_sharing: false,
@@ -491,6 +499,8 @@ export default function TeacherLiveMonitoringPage() {
               type: 'peer_status',
               peer_id: user.id,
               peer_name: user.name,
+              peer_role: 'teacher',
+              user_role: 'teacher',
               is_camera_on: isCameraOn,
               is_mic_on: isMicOn,
               is_screen_sharing: true,
@@ -689,6 +699,7 @@ export default function TeacherLiveMonitoringPage() {
                 size="sm"
                 onClick={handleToggleScreenShare}
                 leftIcon={<Icons.ScreenShare size={15} />}
+                className={isScreenSharing ? 'border-emerald-500 text-emerald-400 font-bold' : ''}
               >
                 {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
               </Button>
@@ -730,20 +741,24 @@ export default function TeacherLiveMonitoringPage() {
           </div>
         </Card>
 
-        {/* Active Screen Sharing Presentation Banner */}
+        {/* Active Screen Sharing Presentation Banner (Consolidated live status) */}
         {activePresenter && (
-          <div className="flex items-center justify-between px-4 py-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-700 text-xs font-semibold animate-pulse">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between px-4 py-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-700 text-xs font-semibold">
+            <div className="flex items-center gap-2.5">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
               <Icons.ScreenShare size={16} className="text-emerald-600" />
               <span>
-                <strong>{activePresenter}</strong> is currently sharing their screen with the classroom.
+                <strong>{isScreenSharing ? 'You are' : `${activePresenter} is`}</strong> currently presenting screen to the classroom.
               </span>
             </div>
-            {isScreenSharing && (
-              <Button variant="danger" size="sm" onClick={handleToggleScreenShare}>
-                Stop Presenting
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-mono">
+                LIVE STREAM ACTIVE
+              </span>
+            </div>
           </div>
         )}
 

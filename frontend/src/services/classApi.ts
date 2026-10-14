@@ -84,19 +84,11 @@ export interface ClassAnalytics {
   }>
 }
 
-function getAuthHeaders(): HeadersInit {
-  const token = localStorage.getItem('access_token')
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  }
-}
+import { authenticatedFetch, getAuthHeaders } from './authClient'
 
 export const classApi = {
   async getTeacherClasses(): Promise<ClassItem[]> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/teacher`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/teacher`)
     if (!res.ok) throw new Error('Failed to load classes')
     return res.json()
   },
@@ -108,9 +100,8 @@ export const classApi = {
     scheduled_start?: string
     scheduled_end?: string
   }): Promise<ClassItem> {
-    const res = await fetch(`${env.apiBaseUrl}/classes`, {
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes`, {
       method: 'POST',
-      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     })
     if (!res.ok) {
@@ -121,9 +112,8 @@ export const classApi = {
   },
 
   async startClass(classId: string): Promise<ClassItem> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/${classId}/start`, {
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${classId}/start`, {
       method: 'POST',
-      headers: getAuthHeaders(),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => null)
@@ -133,9 +123,8 @@ export const classApi = {
   },
 
   async endClass(classId: string): Promise<ClassItem> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/${classId}/end`, {
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${classId}/end`, {
       method: 'POST',
-      headers: getAuthHeaders(),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => null)
@@ -145,17 +134,14 @@ export const classApi = {
   },
 
   async getStudentClasses(): Promise<EnrollmentItem[]> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/student`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/student`)
     if (!res.ok) throw new Error('Failed to load student classes')
     return res.json()
   },
 
   async joinClass(classCode: string): Promise<EnrollmentItem> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/join`, {
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/join`, {
       method: 'POST',
-      headers: getAuthHeaders(),
       body: JSON.stringify({ class_code: classCode }),
     })
     if (!res.ok) {
@@ -166,41 +152,31 @@ export const classApi = {
   },
 
   async getClassDetails(idOrCode: string): Promise<ClassItem> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/${idOrCode}`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${idOrCode}`)
     if (!res.ok) throw new Error('Classroom not found')
     return res.json()
   },
 
   async getClassStudents(idOrCode: string): Promise<StudentRoster[]> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/${idOrCode}/students`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${idOrCode}/students`)
     if (!res.ok) throw new Error('Failed to load student roster')
     return res.json()
   },
 
   async getStudentStats(): Promise<StudentStats> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/student/stats`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/student/stats`)
     if (!res.ok) throw new Error('Failed to load student statistics')
     return res.json()
   },
 
   async getStudentAttendance(): Promise<AttendanceRecord[]> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/student/attendance`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/student/attendance`)
     if (!res.ok) throw new Error('Failed to load attendance records')
     return res.json()
   },
 
   async getClassAnalytics(idOrCode: string): Promise<ClassAnalytics> {
-    const res = await fetch(`${env.apiBaseUrl}/classes/${idOrCode}/analytics`, {
-      headers: getAuthHeaders(),
-    })
+    const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${idOrCode}/analytics`)
     if (!res.ok) throw new Error('Failed to load class analytics')
     return res.json()
   },

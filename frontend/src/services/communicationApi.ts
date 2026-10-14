@@ -82,10 +82,30 @@ export interface StudentPersonalReportData {
   data_limitations_notice: string
 }
 
+import { refreshAccessToken } from './authClient'
+
 function getAuthHeaders() {
   const token = localStorage.getItem('token') || localStorage.getItem('access_token')
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
+
+// Transparent 401 retry interceptor for communication endpoints
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      originalRequest._retry = true
+      const newToken = await refreshAccessToken()
+      if (newToken) {
+        originalRequest.headers = originalRequest.headers || {}
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        return axios(originalRequest)
+      }
+    }
+    return Promise.reject(error)
+  }
+)
 
 export const communicationApi = {
   async getWebRTCConfig(): Promise<WebRTCConfig> {

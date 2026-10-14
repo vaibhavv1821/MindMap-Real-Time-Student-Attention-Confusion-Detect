@@ -94,7 +94,8 @@ export default function LoginPage() {
           email: userData.email,
           role: userData.role,
         },
-        tokenData.access_token
+        tokenData.access_token,
+        tokenData.refresh_token
       )
 
       setIsLoading(false)

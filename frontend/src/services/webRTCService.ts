@@ -135,13 +135,32 @@ export class WebRTCService {
       iceServers: this.iceServers,
     })
 
-    // Attach local tracks
-    const activeStream = this.displayStream || this.localStream
-    if (activeStream) {
-      activeStream.getTracks().forEach((track) => {
-        pc.addTrack(track, activeStream)
-      })
-    } else {
+    // Attach local media:
+    // Video: active display stream if sharing, otherwise camera
+    const videoTrack = this.displayStream?.getVideoTracks()[0] || this.localStream?.getVideoTracks()[0]
+    // Audio: microphone from localStream
+    const audioTrack = this.localStream?.getAudioTracks()[0]
+
+    let hasAddedTracks = false
+    if (audioTrack && this.localStream) {
+      try {
+        pc.addTrack(audioTrack, this.localStream)
+        hasAddedTracks = true
+      } catch (e) {
+        console.warn(`[WebRTC] Failed to add audio track for ${peerId}:`, e)
+      }
+    }
+    if (videoTrack) {
+      const streamForVideo = this.displayStream || this.localStream || new MediaStream([videoTrack])
+      try {
+        pc.addTrack(videoTrack, streamForVideo)
+        hasAddedTracks = true
+      } catch (e) {
+        console.warn(`[WebRTC] Failed to add video track for ${peerId}:`, e)
+      }
+    }
+
+    if (!hasAddedTracks) {
       try {
         pc.addTransceiver('audio', { direction: 'sendrecv' })
         pc.addTransceiver('video', { direction: 'sendrecv' })
@@ -313,27 +332,44 @@ export class WebRTCService {
     }
     this.isSharingScreen = false
 
-    // Restore camera video track across peers
-    if (this.localStream) {
-      const cameraTrack = this.localStream.getVideoTracks()[0]
-      if (cameraTrack) {
-        this.replaceVideoTrackAcrossPeers(cameraTrack)
-      }
-    }
+    // Restore camera video track across peers or null if camera is off
+    const cameraTrack = this.localStream?.getVideoTracks()[0] || null
+    this.replaceVideoTrackAcrossPeers(cameraTrack)
   }
 
   public getIsSharingScreen(): boolean {
     return this.isSharingScreen
   }
 
-  private replaceVideoTrackAcrossPeers(newTrack: MediaStreamTrack) {
-    this.peerConnections.forEach((pc) => {
+  private replaceVideoTrackAcrossPeers(newTrack: MediaStreamTrack | null) {
+    this.peerConnections.forEach((pc, peerId) => {
       const senders = pc.getSenders()
-      const videoSender = senders.find((s) => s.track && s.track.kind === 'video')
+      const transceivers = pc.getTransceivers()
+
+      const videoTransceiver = transceivers.find(
+        (t) =>
+          (t.sender.track && t.sender.track.kind === 'video') ||
+          (t.receiver.track && t.receiver.track.kind === 'video')
+      )
+
+      const videoSender =
+        videoTransceiver?.sender ||
+        senders.find((s) => s.track && s.track.kind === 'video') ||
+        senders.find((s) => (s as any).kind === 'video')
+
       if (videoSender) {
+        console.log(`[WebRTC] Replacing video track for peer ${peerId} (trackId: ${newTrack?.id || 'null'})`)
         videoSender.replaceTrack(newTrack).catch((err) => {
-          console.warn('[WebRTC] replaceTrack error:', err)
+          console.warn(`[WebRTC] replaceTrack error for ${peerId}:`, err)
         })
+      } else if (newTrack) {
+        try {
+          console.log(`[WebRTC] Adding video track for peer ${peerId}`)
+          pc.addTrack(newTrack, this.displayStream || this.localStream || new MediaStream([newTrack]))
+          this.initiateOffer(peerId)
+        } catch (err) {
+          console.warn(`[WebRTC] addTrack error for ${peerId}:`, err)
+        }
       }
     })
   }

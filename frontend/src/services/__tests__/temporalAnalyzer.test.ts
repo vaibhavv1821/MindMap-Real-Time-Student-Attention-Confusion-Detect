@@ -269,3 +269,55 @@ test('12. No-face and insufficient data safe handling', () => {
   assert.equal(predNoFace.attention_state, 'INATTENTIVE')
   assert.equal(predNoFace.attention_score, 0)
 })
+
+test('13. Rolling buffer dynamic score update pipeline transitions', () => {
+  const buffer = new RollingTemporalBuffer(2500, 60, 5)
+  const predictor = new TemporalMLPredictor()
+
+  // 1. Initially buffer is empty
+  let tf = TemporalFeatureAggregator.aggregate(buffer.getSamples(), 1000)
+  let pred = predictor.predict(tf)
+  assert.equal(tf.valid_samples_count, 0)
+  assert.equal(pred.attention_score, 0)
+
+  // 2. Feed 20 attentive frames (looking at screen, normal blink, no furrow)
+  for (let i = 0; i < 20; i++) {
+    buffer.addSample(
+      createSampleFrame({
+        timestampMs: 1000 + i * 100,
+        gazeDir: 'CENTER',
+        gazeDev: 0.05,
+        browFurrowScore: 0.1,
+      })
+    )
+  }
+  tf = TemporalFeatureAggregator.aggregate(buffer.getSamples(), 3000)
+  pred = predictor.predict(tf)
+  assert.equal(tf.valid_samples_count, 20)
+  assert.ok(pred.attention_score >= 80, `Expected high attention, got ${pred.attention_score}`)
+  assert.equal(pred.attention_state, 'ATTENTIVE')
+
+  const initialAttScore = pred.attention_score
+
+  // 3. Student looks away and furrows brows for next 15 frames
+  for (let i = 0; i < 15; i++) {
+    buffer.addSample(
+      createSampleFrame({
+        timestampMs: 3100 + i * 100,
+        gazeDir: 'AWAY',
+        gazeDev: 0.85,
+        headYaw: 35,
+        browFurrowScore: 0.85,
+      })
+    )
+  }
+  tf = TemporalFeatureAggregator.aggregate(buffer.getSamples(), 4600)
+  pred = predictor.predict(tf)
+
+  // Scores MUST dynamically change
+  assert.notEqual(pred.attention_score, initialAttScore, 'Attention score must change when behavior changes')
+  assert.ok(pred.attention_score < 60, `Expected dropped attention, got ${pred.attention_score}`)
+  assert.ok(pred.confusion_score > 30, `Expected elevated confusion, got ${pred.confusion_score}`)
+  assert.ok(tf.valid_samples_count > 0, 'Valid sample count should be positive')
+})
+
