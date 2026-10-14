@@ -52,6 +52,9 @@ async def connect_db():
     await db["sessions"].create_index("class_id")
     await db["session_participants"].create_index([("session_id", 1), ("student_id", 1)])
     await db["session_participants"].create_index("student_id")
+    await db["classroom_messages"].create_index([("class_code", 1), ("created_at", -1)])
+    await db["classroom_messages"].create_index([("class_id", 1), ("created_at", -1)])
+    await db["screen_share_permissions"].create_index("class_code", unique=True)
 
 
 

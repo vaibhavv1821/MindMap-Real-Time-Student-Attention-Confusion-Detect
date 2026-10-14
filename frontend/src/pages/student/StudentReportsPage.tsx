@@ -15,7 +15,8 @@ import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Icons } from '@/components/ui/Icons'
-import { generateSessionPDFReport } from '../teacher/PDFReportExporter'
+import { generateStudentPersonalPDFReport } from '../teacher/PDFReportExporter'
+import { communicationApi, StudentPersonalReportData } from '@/services/communicationApi'
 import { useToast } from '@/components/ui/Toast'
 import { useAuthContext } from '@/context/AuthContext'
 import { classApi, EnrollmentItem, StudentStats, AttendanceRecord } from '@/services/classApi'
@@ -93,27 +94,47 @@ export default function StudentReportsPage() {
     score: avgAttention > 0 ? avgAttention : 0,
   }))
 
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     const className = selectedClass ? selectedClass.class_name : 'Personal Session Report'
     const classCode = selectedClass ? selectedClass.class_code : 'MINDMAP-STUDENT'
 
-    generateSessionPDFReport({
-      className: `${className} - Personal Student Report`,
-      classCode,
-      instructor: selectedClass ? selectedClass.teacher_name : 'MindMap AI Platform',
-      date: new Date().toLocaleDateString(),
-      totalStudents: 1,
-      avgAttention,
-      avgConfusion,
-      students: [
-        {
-          name: `${user?.name || 'Student'} (You)`,
-          email: user?.email || 'student@mindmap.edu',
-          attention: avgAttention,
-          confusion: avgConfusion,
-          status: 'Present',
-        },
-      ],
+    try {
+      if (selectedClass) {
+        const data = await communicationApi.getReportData(selectedClass.id)
+        generateStudentPersonalPDFReport(data as StudentPersonalReportData)
+        showToast({ type: 'success', title: 'Report Exported', message: 'Downloaded your personal focus report.' })
+        return
+      }
+    } catch {
+      // Fallback below
+    }
+
+    generateStudentPersonalPDFReport({
+      student_id: user?.id || 'me',
+      student_name: user?.name || 'Student',
+      student_email: user?.email || 'student@mindmap.edu',
+      class_id: selectedClass?.id || 'personal',
+      class_code: classCode,
+      class_name: className,
+      date_range: 'Recent Classroom Sessions',
+      generated_at: new Date().toISOString(),
+      has_data: attendanceRecords.length > 0,
+      sessions_attended: stats?.total_sessions_attended || attendanceRecords.length,
+      personal_avg_attention: avgAttention,
+      personal_avg_confusion: avgConfusion,
+      sessions: attendanceRecords.map((r, idx) => ({
+        session_id: r.session_id || `sess_${idx}`,
+        started_at: r.joined_at || new Date().toISOString(),
+        avg_attention: r.avg_attention,
+        avg_confusion: r.avg_confusion,
+        peak_students: 1,
+      })),
+      metric_explanations: {
+        attention_score: 'Calculated from gaze stability, posture alignment, and regular blink dynamics.',
+        confusion_score: 'Calculated from persistent brow furrowing and head tilt deflection.',
+        privacy: '100% Client-Side. Zero video or facial frames are stored or transmitted.',
+      },
+      data_limitations_notice: 'Notice: Metrics are estimated from real-time client-side facial landmark telemetry (EAR, Gaze, Brow, Head Pose). Zero raw video frames stored.',
     })
     showToast({ type: 'success', title: 'Report Exported', message: 'Downloaded your personal focus report.' })
   }

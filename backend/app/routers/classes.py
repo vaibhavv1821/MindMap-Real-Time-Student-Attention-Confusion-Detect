@@ -28,6 +28,19 @@ from app.schemas.classroom import (
     StudentStatsOut,
     ClassAnalyticsOut,
 )
+from app.core.config import settings
+from app.features.connection_manager import manager
+from app.schemas.communication import (
+    ChatMessageIn,
+    ChatMessageOut,
+    ICEServerConfig,
+    WebRTCConfigOut,
+    ScreenSharePermissionUpdate,
+    ClassReportDataOut,
+    StudentPersonalReportOut,
+    StudentReportSummary,
+    SessionSummaryItem,
+)
 
 router = APIRouter(prefix="/classes", tags=["Classrooms & Enrollment"])
 
@@ -477,6 +490,23 @@ async def end_class(
 # 4. CLASS DETAILS, ROSTER & ANALYTICS
 # ==========================================
 
+@router.get("/webrtc-config", response_model=WebRTCConfigOut)
+async def get_webrtc_config(current_user: dict = Depends(get_current_user)):
+    """Returns dynamic WebRTC ICE server configurations (STUN and optional TURN)."""
+    ice_servers = [
+        ICEServerConfig(urls=[settings.webrtc_stun_server or "stun:stun.l.google.com:19302"])
+    ]
+    if settings.webrtc_turn_server:
+        ice_servers.append(
+            ICEServerConfig(
+                urls=[settings.webrtc_turn_server],
+                username=settings.webrtc_turn_username or None,
+                credential=settings.webrtc_turn_credential or None,
+            )
+        )
+    return WebRTCConfigOut(ice_servers=ice_servers)
+
+
 @router.get("/{class_id_or_code}", response_model=ClassOut)
 async def get_class_details(
     class_id_or_code: str,
@@ -625,3 +655,358 @@ async def get_class_analytics(
         overall_avg_confusion=overall_conf,
         recent_sessions=recent_sessions,
     )
+
+
+# ==========================================
+# 5. COMMUNICATION & REPORTING UPGRADES
+# ==========================================
+
+async def _get_authorized_class_doc(class_id_or_code: str, user: dict, db):
+    """Fetches classroom and verifies requester is enrolled or teacher or admin."""
+    query = {"_id": ObjectId(class_id_or_code)} if ObjectId.is_valid(class_id_or_code) else {"class_code": class_id_or_code.upper()}
+    class_doc = await db["classes"].find_one(query)
+    if not class_doc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Classroom not found")
+
+    user_id = str(user["_id"])
+    user_role = user.get("role", "")
+    if user_role == Role.admin.value:
+        return class_doc
+    if user_role == Role.teacher.value and class_doc.get("teacher_id") == user_id:
+        return class_doc
+
+    # Check student enrollment
+    enrolled = await db["enrollments"].find_one({
+        "class_id": str(class_doc["_id"]),
+        "student_id": user_id,
+        "status": EnrollmentStatus.ACTIVE.value,
+    })
+    if not enrolled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not an authorized member of this classroom")
+    return class_doc
+
+
+@router.get("/{class_id_or_code}/messages", response_model=List[ChatMessageOut])
+async def get_classroom_messages(
+    class_id_or_code: str,
+    limit: int = 50,
+    before: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Retrieves paginated chat history for an authorized classroom."""
+    db = get_db()
+    class_doc = await _get_authorized_class_doc(class_id_or_code, current_user, db)
+    class_code = class_doc["class_code"]
+
+    query = {"class_code": class_code}
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before)
+            query["created_at"] = {"$lt": before_dt}
+        except Exception:
+            pass
+
+    safe_limit = min(max(1, limit), 100)
+    cursor = db["classroom_messages"].find(query).sort("created_at", -1).limit(safe_limit)
+    messages = await cursor.to_list(length=safe_limit)
+
+    messages.reverse()
+    return [
+        ChatMessageOut(
+            id=str(m["_id"]),
+            class_code=class_code,
+            sender_id=str(m.get("sender_id", "")),
+            sender_name=str(m.get("sender_name", "Anonymous")),
+            sender_role=str(m.get("sender_role", "student")),
+            text=str(m.get("text", "")),
+            timestamp=m["created_at"].isoformat() if isinstance(m.get("created_at"), datetime) else str(m.get("created_at", "")),
+        )
+        for m in messages
+    ]
+
+
+@router.post("/{class_id_or_code}/messages", response_model=ChatMessageOut, status_code=status.HTTP_201_CREATED)
+async def send_classroom_message(
+    class_id_or_code: str,
+    data: ChatMessageIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sends a chat message to an authorized classroom and broadcasts to active WebSocket connections."""
+    db = get_db()
+    class_doc = await _get_authorized_class_doc(class_id_or_code, current_user, db)
+    class_code = class_doc["class_code"]
+    user_id = str(current_user["_id"])
+    user_name = current_user.get("full_name", "User")
+    user_role = current_user.get("role", "student")
+
+    text = data.text.strip()[:1000]
+    now = datetime.now(timezone.utc)
+    doc = {
+        "class_id": str(class_doc["_id"]),
+        "class_code": class_code,
+        "sender_id": user_id,
+        "sender_name": user_name,
+        "sender_role": user_role,
+        "text": text,
+        "created_at": now,
+    }
+    result = await db["classroom_messages"].insert_one(doc)
+    msg_id = str(result.inserted_id)
+
+    room_key = f"room_{class_code.lower()}"
+    await manager.broadcast({
+        "type": "chat_message",
+        "id": msg_id,
+        "class_code": class_code,
+        "sender_id": user_id,
+        "sender_name": user_name,
+        "sender_role": user_role,
+        "text": text,
+        "timestamp": now.isoformat(),
+    }, room_key)
+
+    return ChatMessageOut(
+        id=msg_id,
+        class_code=class_code,
+        sender_id=user_id,
+        sender_name=user_name,
+        sender_role=user_role,
+        text=text,
+        timestamp=now.isoformat(),
+    )
+
+
+@router.get("/{class_id_or_code}/screen-share-permission")
+async def get_screen_share_permission(
+    class_id_or_code: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Returns current screen sharing permissions for this classroom."""
+    db = get_db()
+    class_doc = await _get_authorized_class_doc(class_id_or_code, current_user, db)
+    class_code = class_doc["class_code"]
+    user_id = str(current_user["_id"])
+    user_role = current_user.get("role", "")
+
+    perm = await db["screen_share_permissions"].find_one({"class_code": class_code})
+    is_open_to_all = perm.get("is_open_to_all", False) if perm else False
+    allowed_students = perm.get("allowed_students", []) if perm else []
+
+    can_share = (user_role in [Role.teacher.value, Role.admin.value]) or is_open_to_all or (user_id in allowed_students)
+    return {
+        "class_code": class_code,
+        "is_open_to_all": is_open_to_all,
+        "allowed_students": allowed_students,
+        "can_share": can_share,
+    }
+
+
+@router.post("/{class_id_or_code}/screen-share-permission")
+async def update_screen_share_permission(
+    class_id_or_code: str,
+    data: ScreenSharePermissionUpdate,
+    current_user: dict = Depends(require_role(Role.teacher, Role.admin)),
+):
+    """Teacher controls screen sharing: allow all students or grant/revoke for individual student."""
+    db = get_db()
+    class_doc = await _get_authorized_class_doc(class_id_or_code, current_user, db)
+    class_code = class_doc["class_code"]
+
+    perm = await db["screen_share_permissions"].find_one({"class_code": class_code})
+    allowed_students = perm.get("allowed_students", []) if perm else []
+    is_open = perm.get("is_open_to_all", False) if perm else False
+
+    if data.is_open_to_all is not None:
+        is_open = data.is_open_to_all
+
+    if data.allowed_student_id:
+        if data.action == "revoke" and data.allowed_student_id in allowed_students:
+            allowed_students.remove(data.allowed_student_id)
+        elif data.action == "grant" and data.allowed_student_id not in allowed_students:
+            allowed_students.append(data.allowed_student_id)
+
+    now = datetime.now(timezone.utc)
+    await db["screen_share_permissions"].update_one(
+        {"class_code": class_code},
+        {"$set": {
+            "class_id": str(class_doc["_id"]),
+            "class_code": class_code,
+            "is_open_to_all": is_open,
+            "allowed_students": allowed_students,
+            "updated_at": now,
+        }},
+        upsert=True,
+    )
+
+    room_key = f"room_{class_code.lower()}"
+    await manager.broadcast({
+        "type": "screen_share_permission",
+        "is_open_to_all": is_open,
+        "allowed_students": allowed_students,
+        "updated_by": str(current_user["_id"]),
+    }, room_key)
+
+    return {
+        "class_code": class_code,
+        "is_open_to_all": is_open,
+        "allowed_students": allowed_students,
+        "updated_at": now.isoformat(),
+    }
+
+
+@router.get("/{class_id_or_code}/report-data")
+async def get_classroom_report_data(
+    class_id_or_code: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Returns authentic academic report data filtered by date range.
+    Role-governed:
+    - Teacher/Admin: Full class report including student roster and session breakdown.
+    - Student: Strictly their own personal performance and attendance.
+    """
+    db = get_db()
+    class_doc = await _get_authorized_class_doc(class_id_or_code, current_user, db)
+    class_id = str(class_doc["_id"])
+    class_code = class_doc["class_code"]
+    user_id = str(current_user["_id"])
+    user_role = current_user.get("role", "student")
+
+    session_query = {"class_id": class_id}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                date_filter["$gte"] = datetime.fromisoformat(start_date)
+            except Exception:
+                pass
+        if end_date:
+            try:
+                date_filter["$lte"] = datetime.fromisoformat(end_date)
+            except Exception:
+                pass
+        if date_filter:
+            session_query["started_at"] = date_filter
+
+    sessions_cursor = db["sessions"].find(session_query).sort("started_at", -1)
+    sessions = await sessions_cursor.to_list(length=100)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    date_range_str = f"{start_date or 'Earliest'} to {end_date or 'Latest'}" if (start_date or end_date) else "All Available History"
+    limitations_notice = (
+        "Notice: Metrics are calculated from real-time client-side facial landmark telemetry "
+        "(EAR, Gaze, Head Pose, Brow Furrow) using Random Forest classification. Zero raw video frames "
+        "are stored or transmitted. Intended for educational engagement analytics only."
+    )
+
+    if user_role in [Role.teacher.value, Role.admin.value]:
+        enrolled_count = await db["enrollments"].count_documents({"class_id": class_id, "status": EnrollmentStatus.ACTIVE.value})
+        total_att = 0.0
+        total_conf = 0.0
+        valid_sess = 0
+        session_items: List[SessionSummaryItem] = []
+
+        for s in sessions:
+            att = s.get("avg_attention", 0.0)
+            conf = s.get("avg_confusion", 0.0)
+            if att > 0:
+                total_att += att
+                total_conf += conf
+                valid_sess += 1
+            session_items.append(
+                SessionSummaryItem(
+                    session_id=str(s["_id"]),
+                    started_at=s["started_at"].isoformat() if isinstance(s.get("started_at"), datetime) else str(s.get("started_at", "")),
+                    ended_at=s["ended_at"].isoformat() if isinstance(s.get("ended_at"), datetime) else None,
+                    avg_attention=att,
+                    avg_confusion=conf,
+                    peak_students=s.get("peak_students", 0),
+                )
+            )
+
+        enrollments_cursor = db["enrollments"].find({"class_id": class_id, "status": EnrollmentStatus.ACTIVE.value})
+        enrollments = await enrollments_cursor.to_list(length=200)
+        roster_items: List[StudentReportSummary] = []
+
+        for e in enrollments:
+            s_uid = e["student_id"]
+            parts = await db["session_participants"].find({"class_id": class_id, "student_id": s_uid}).to_list(length=100)
+            s_att = round(sum(p.get("avg_attention", 0.0) for p in parts) / len(parts), 1) if parts else 0.0
+            s_conf = round(sum(p.get("avg_confusion", 0.0) for p in parts) / len(parts), 1) if parts else 0.0
+            status_text = "PRESENT" if parts else "ABSENT"
+            roster_items.append(
+                StudentReportSummary(
+                    student_id=s_uid,
+                    student_name=e.get("student_name", "Student"),
+                    student_email=e.get("student_email", ""),
+                    attendance_status=status_text,
+                    sessions_attended=len(parts),
+                    avg_attention=s_att,
+                    avg_confusion=s_conf,
+                )
+            )
+
+        has_data = len(sessions) > 0 or len(roster_items) > 0
+        overall_att = round(total_att / valid_sess, 1) if valid_sess > 0 else 0.0
+        overall_conf = round(total_conf / valid_sess, 1) if valid_sess > 0 else 0.0
+
+        return ClassReportDataOut(
+            class_id=class_id,
+            class_code=class_code,
+            class_name=class_doc["name"],
+            instructor_name=class_doc.get("teacher_name", "Instructor"),
+            date_range=date_range_str,
+            generated_at=now_iso,
+            has_data=has_data,
+            total_students_enrolled=enrolled_count,
+            total_sessions_conducted=len(sessions),
+            overall_avg_attention=overall_att,
+            overall_avg_confusion=overall_conf,
+            sessions=session_items,
+            student_roster=roster_items,
+            data_limitations_notice=limitations_notice,
+        )
+
+    else:
+        parts = await db["session_participants"].find({"class_id": class_id, "student_id": user_id}).sort("joined_at", -1).to_list(length=100)
+        s_att = round(sum(p.get("avg_attention", 0.0) for p in parts) / len(parts), 1) if parts else 0.0
+        s_conf = round(sum(p.get("avg_confusion", 0.0) for p in parts) / len(parts), 1) if parts else 0.0
+
+        student_sessions: List[SessionSummaryItem] = [
+            SessionSummaryItem(
+                session_id=str(p["session_id"]),
+                started_at=p["joined_at"].isoformat() if isinstance(p.get("joined_at"), datetime) else str(p.get("joined_at", "")),
+                ended_at=p["left_at"].isoformat() if isinstance(p.get("left_at"), datetime) else None,
+                avg_attention=p.get("avg_attention", 0.0),
+                avg_confusion=p.get("avg_confusion", 0.0),
+                peak_students=1,
+            )
+            for p in parts
+        ]
+
+        has_data = len(parts) > 0
+        explanations = {
+            "attention_score": "Composite metric [0-100] based on screen gaze persistence, head posture stability, and regular blink frequency.",
+            "confusion_score": "Composite metric [0-100] derived from prolonged eyebrow furrowing, head tilt deviation, and rapid gaze shifts.",
+            "privacy": "Zero video or facial images are stored. Analysis is performed client-side using MediaPipe Face Mesh coordinates.",
+        }
+
+        return StudentPersonalReportOut(
+            student_id=user_id,
+            student_name=current_user.get("full_name", "Student"),
+            student_email=current_user.get("email", ""),
+            class_id=class_id,
+            class_code=class_code,
+            class_name=class_doc["name"],
+            date_range=date_range_str,
+            generated_at=now_iso,
+            has_data=has_data,
+            sessions_attended=len(parts),
+            personal_avg_attention=s_att,
+            personal_avg_confusion=s_conf,
+            sessions=student_sessions,
+            metric_explanations=explanations,
+            data_limitations_notice=limitations_notice,
+        )

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useRef, useEffect } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Avatar } from '@/components/ui/Avatar'
 import { Icons } from '@/components/ui/Icons'
@@ -12,6 +12,8 @@ export interface VideoTileProps {
   isCameraOff?: boolean
   isHandRaised?: boolean
   isLocalUser?: boolean
+  isScreenSharing?: boolean
+  stream?: MediaStream | null
   videoRef?: React.RefObject<HTMLVideoElement>
   canvasRef?: React.RefObject<HTMLCanvasElement>
   className?: string
@@ -26,6 +28,8 @@ export const VideoTile = ({
   isCameraOff = false,
   isHandRaised = false,
   isLocalUser = false,
+  isScreenSharing = false,
+  stream,
   videoRef,
   canvasRef,
   className = '',
@@ -33,11 +37,17 @@ export const VideoTile = ({
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const targetVideoRef = videoRef || localVideoRef
 
+  useEffect(() => {
+    if (targetVideoRef.current && stream !== undefined) {
+      targetVideoRef.current.srcObject = stream
+    }
+  }, [stream, targetVideoRef])
+
   return (
     <div
       className={`relative rounded-xl bg-slate-900 border border-slate-800 overflow-hidden flex items-center justify-center ${
         isHandRaised ? 'ring-2 ring-amber-500' : ''
-      } ${className}`}
+      } ${isScreenSharing ? 'ring-2 ring-emerald-500' : ''} ${className}`}
     >
       {!isCameraOff ? (
         <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
@@ -46,9 +56,11 @@ export const VideoTile = ({
             autoPlay
             playsInline
             muted={isLocalUser}
-            className="w-full h-full object-cover transform -scale-x-100"
+            className={`w-full h-full object-cover ${
+              isScreenSharing ? 'object-contain transform-none' : 'transform -scale-x-100'
+            }`}
           />
-          {canvasRef && (
+          {canvasRef && !isScreenSharing && (
             <canvas
               ref={canvasRef}
               width={320}
@@ -66,12 +78,18 @@ export const VideoTile = ({
 
       {/* Top Bar Overlay */}
       <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between z-10 pointer-events-none">
-        <span className="text-xs font-medium text-white bg-slate-950/80 px-2 py-0.5 rounded border border-slate-700/60 flex items-center gap-1">
+        <span className="text-xs font-medium text-white bg-slate-950/80 px-2 py-0.5 rounded border border-slate-700/60 flex items-center gap-1.5">
           <span>{name}</span>
-          {isLocalUser && <span className="text-[10px] text-blue-400">(You)</span>}
+          {isLocalUser && <span className="text-[10px] text-blue-400 font-semibold">(You)</span>}
+          {isScreenSharing && (
+            <span className="text-[10px] bg-emerald-600/90 text-white px-1.5 py-0.2 rounded font-medium flex items-center gap-1">
+              <Icons.ScreenShare size={10} />
+              <span>Presenting</span>
+            </span>
+          )}
         </span>
 
-        {role === 'student' && attentionScore !== undefined && (
+        {role === 'student' && attentionScore !== undefined && !isScreenSharing && (
           <Badge
             variant={attentionScore >= 70 ? 'success' : attentionScore >= 40 ? 'warning' : 'danger'}
             size="sm"
@@ -103,7 +121,7 @@ export const VideoTile = ({
           )}
         </div>
 
-        {confusionScore > 50 && (
+        {confusionScore > 50 && !isScreenSharing && (
           <span className="px-2 py-0.5 rounded bg-purple-700 text-white font-medium text-[10px]">
             Confused ({confusionScore}%)
           </span>

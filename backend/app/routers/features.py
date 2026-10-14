@@ -87,25 +87,124 @@ class TelemetryConnectionManager:
                 except Exception:
                     pass
 
-manager = TelemetryConnectionManager()
+from app.features.connection_manager import manager, ClassroomConnectionManager
+
+TelemetryConnectionManager = ClassroomConnectionManager
 
 @router.websocket("/ws/{class_code}")
 async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
     """
-    WebSocket endpoint for real-time telemetry streaming.
-    Receives derived numerical feature vectors and broadcasts to classroom dashboard.
-    Zero video bytes accepted.
+    WebSocket endpoint for real-time classroom telemetry, chat, and WebRTC signaling.
+    Zero video bytes accepted. Signaling and numerical telemetry only.
     """
     room_key = f"room_{class_code.lower()}"
     await manager.connect(websocket, room_key)
     try:
         while True:
             data = await websocket.receive_json()
-            # Broadcast processed numerical telemetry to teacher and classroom peers
+            if not isinstance(data, dict):
+                continue
+
+            msg_type = data.get("type")
+
+            # 1. User Join / Introduction event
+            if msg_type == "join" or data.get("event") == "join":
+                user_id = str(data.get("user_id") or data.get("peer_id") or "")
+                user_name = str(data.get("user_name") or data.get("peer_name") or "User")
+                user_role = str(data.get("user_role") or data.get("peer_role") or "student")
+                manager.register_user(websocket, {
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "user_role": user_role,
+                })
+                await manager.broadcast({
+                    "type": "peer_joined",
+                    "peer_id": user_id,
+                    "peer_name": user_name,
+                    "peer_role": user_role,
+                }, room_key, exclude=websocket)
+                continue
+
+            # 2. Classroom Chat Message
+            elif msg_type == "chat_message":
+                text = str(data.get("text", "")).strip()
+                if text:
+                    text = text[:1000]
+                    from app.db.mongodb import get_db
+                    from datetime import datetime, timezone
+                    db = get_db()
+                    now = datetime.now(timezone.utc)
+                    code_clean = class_code.strip().upper()
+                    sender_id = str(data.get("sender_id", ""))
+                    sender_name = str(data.get("sender_name", "Anonymous"))
+                    sender_role = str(data.get("sender_role", "student"))
+
+                    msg_doc = {
+                        "class_code": code_clean,
+                        "sender_id": sender_id,
+                        "sender_name": sender_name,
+                        "sender_role": sender_role,
+                        "text": text,
+                        "created_at": now,
+                    }
+                    try:
+                        res = await db["classroom_messages"].insert_one(msg_doc)
+                        msg_id = str(res.inserted_id)
+                    except Exception:
+                        msg_id = str(now.timestamp())
+
+                    await manager.broadcast({
+                        "type": "chat_message",
+                        "id": msg_id,
+                        "class_code": code_clean,
+                        "sender_id": sender_id,
+                        "sender_name": sender_name,
+                        "sender_role": sender_role,
+                        "text": text,
+                        "timestamp": now.isoformat(),
+                        "temp_id": data.get("temp_id"),
+                    }, room_key)
+                continue
+
+            # 3. WebRTC Peer Signaling (Offer / Answer / ICE Candidate)
+            elif msg_type == "webrtc_signal":
+                await manager.broadcast({
+                    "type": "webrtc_signal",
+                    "target_id": data.get("target_id"),
+                    "sender_id": data.get("sender_id"),
+                    "sender_name": data.get("sender_name"),
+                    "sender_role": data.get("sender_role"),
+                    "signal": data.get("signal"),
+                }, room_key, exclude=websocket)
+                continue
+
+            # 4. Media Device / Status changes (mic, camera, screen share)
+            elif msg_type == "peer_status":
+                await manager.broadcast({
+                    "type": "peer_status",
+                    "peer_id": data.get("peer_id"),
+                    "peer_name": data.get("peer_name"),
+                    "is_camera_on": data.get("is_camera_on", True),
+                    "is_mic_on": data.get("is_mic_on", True),
+                    "is_screen_sharing": data.get("is_screen_sharing", False),
+                }, room_key, exclude=websocket)
+                continue
+
+            # 5. Screen Share Permission updates (teacher controlled)
+            elif msg_type == "screen_share_permission":
+                await manager.broadcast({
+                    "type": "screen_share_permission",
+                    "is_open_to_all": data.get("is_open_to_all"),
+                    "allowed_students": data.get("allowed_students", []),
+                    "updated_by": data.get("updated_by"),
+                }, room_key, exclude=websocket)
+                continue
+
+            # 6. Legacy / AI Telemetry Streaming
             await manager.broadcast(data, room_key)
 
             # Persist real telemetry in MongoDB session participants if student telemetry
-            if isinstance(data, dict) and "student_id" in data:
+            if "student_id" in data:
                 try:
                     from app.db.mongodb import get_db
                     from datetime import datetime, timezone
@@ -138,4 +237,13 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                 except Exception:
                     pass
     except WebSocketDisconnect:
-        manager.disconnect(websocket, room_key)
+        user_info = manager.disconnect(websocket, room_key)
+        if user_info and user_info.get("user_id"):
+            try:
+                await manager.broadcast({
+                    "type": "peer_left",
+                    "peer_id": user_info["user_id"],
+                    "peer_name": user_info.get("user_name"),
+                }, room_key)
+            except Exception:
+                pass

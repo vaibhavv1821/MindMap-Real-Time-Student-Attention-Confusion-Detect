@@ -5,7 +5,6 @@ import { VideoTile } from './components/VideoTile'
 import { AIMonitoringPanel } from './components/AIMonitoringPanel'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
-import { Input } from '@/components/ui/Input'
 import { Icons } from '@/components/ui/Icons'
 import { useAuthContext } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
@@ -13,22 +12,33 @@ import { AIDetectorService, AIMetrics } from '@/services/aiDetector'
 import { FaceMeshFeatureExtractor } from '@/services/faceMeshExtractor'
 import { TemporalFeatureAggregator, MLPredictionResult } from '@/services/temporalAnalyzer'
 import { classApi, ClassItem } from '@/services/classApi'
+import { communicationApi, ChatMessage } from '@/services/communicationApi'
+import { WebRTCService } from '@/services/webRTCService'
+import {
+  generateTeacherClassroomPDFReport,
+  generateStudentPersonalPDFReport,
+} from '@/pages/teacher/PDFReportExporter'
 import { env } from '@/config/env'
 
 interface PeerStudent {
   id: string
   name: string
   email: string
+  role?: string
   attentionScore: number
   confusionScore: number
   isHandRaised: boolean
+  isCameraOff: boolean
+  isMuted: boolean
+  isScreenSharing: boolean
+  stream?: MediaStream | null
   connectionStatus: string
   lastSeen: number
 }
 
 export default function ClassroomMeetingPage() {
   const { code, classCode } = useParams<{ code?: string; classCode?: string }>()
-  const targetCode = classCode || code
+  const targetCode = (classCode || code || '').trim()
   const navigate = useNavigate()
   const { user } = useAuthContext()
   const { showToast } = useToast()
@@ -36,20 +46,36 @@ export default function ClassroomMeetingPage() {
   const [classInfo, setClassInfo] = useState<ClassItem | null>(null)
   const [peers, setPeers] = useState<PeerStudent[]>([])
 
+  // Media Controls
   const [isMicOn, setIsMicOn] = useState(true)
   const [isCameraOn, setIsCameraOn] = useState(true)
   const [isHandRaised, setIsHandRaised] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [canShareScreen, setCanShareScreen] = useState(false)
+  const [isOpenScreenShare, setIsOpenScreenShare] = useState(false)
+
+  // Navigation & Drawer
   const [activeTab, setActiveTab] = useState<'ai' | 'chat' | 'participants'>('ai')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false)
 
-  // Chat state
-  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: string; text: string; time: string; isTeacher: boolean }>>([
-    { id: '1', sender: 'MindMap System', text: 'Classroom session initialized. Facial focus & confusion telemetry active.', time: 'System', isTeacher: true },
-  ])
+  // Real-Time Chat
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [newMessage, setNewMessage] = useState('')
+  const [isLoadingChat, setIsLoadingChat] = useState(true)
+  const chatBottomRef = useRef<HTMLDivElement>(null)
 
-  // AI Telemetry State with Phase 1 Feature Vector & Phase 2 ML Prediction
+  // WebRTC Service & Streams
+  const webrtcRef = useRef<WebRTCService | null>(null)
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+
+  // Video & AI Element References
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const aiServiceRef = useRef<AIDetectorService | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+
+  // AI Telemetry Initialization
   const initialVector = FaceMeshFeatureExtractor.getEmptyFeatureVector()
   const initialTemporal = TemporalFeatureAggregator.emptyVector()
   const initialPrediction: MLPredictionResult = {
@@ -122,23 +148,105 @@ export default function ClassroomMeetingPage() {
     latencyMs: 2,
   })
 
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const aiServiceRef = useRef<AIDetectorService | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const isTeacher = user?.role === 'teacher' || user?.role === 'admin'
 
-  // 1. Fetch real class metadata from MongoDB
+  // 1. Fetch Classroom Metadata & Screen Share Policy
   useEffect(() => {
     if (!targetCode) return
     classApi
       .getClassDetails(targetCode)
       .then((data) => setClassInfo(data))
       .catch(() => {
-        showToast({ type: 'warning', title: 'Live Session', message: `Connected to classroom: ${targetCode.toUpperCase()}` })
+        showToast({
+          type: 'info',
+          title: 'Live Classroom',
+          message: `Connected to room: ${targetCode.toUpperCase()}`,
+        })
+      })
+
+    // Fetch initial screen share permission
+    communicationApi
+      .getScreenSharePermission(targetCode)
+      .then((perm) => {
+        setCanShareScreen(isTeacher || perm.can_share)
+        setIsOpenScreenShare(perm.is_open_to_all)
+      })
+      .catch(() => {
+        setCanShareScreen(isTeacher)
+      })
+  }, [targetCode, isTeacher])
+
+  // 2. Fetch Chat History on Join
+  useEffect(() => {
+    if (!targetCode) return
+    setIsLoadingChat(true)
+    communicationApi
+      .getMessages(targetCode, 50)
+      .then((msgs) => {
+        setChatMessages(msgs)
+      })
+      .catch((err) => {
+        console.warn('[MindMap] Chat history fetch failed:', err)
+      })
+      .finally(() => {
+        setIsLoadingChat(false)
       })
   }, [targetCode])
 
-  // 2. Start local MediaPipe FaceMesh & AI Telemetry Engine
+  // Scroll chat to bottom on updates
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages, activeTab])
+
+  // 3. Initialize WebRTC Media & Service
+  useEffect(() => {
+    const rtc = new WebRTCService()
+    webrtcRef.current = rtc
+
+    rtc.setCallbacks(
+      // Send signal via WebSocket
+      (targetId, signal) => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'webrtc_signal',
+              target_id: targetId,
+              sender_id: user.id,
+              sender_name: user.name,
+              sender_role: user.role,
+              signal,
+            })
+          )
+        }
+      },
+      // On Remote Stream Received
+      (peerId, remoteStream) => {
+        setPeers((prev) =>
+          prev.map((p) => (p.id === peerId ? { ...p, stream: remoteStream } : p))
+        )
+      },
+      // On Peer Disconnected
+      (peerId) => {
+        setPeers((prev) => prev.filter((p) => p.id !== peerId))
+      }
+    )
+
+    // Start local media stream for WebRTC
+    rtc.startLocalMedia().then((stream) => {
+      if (stream) {
+        setLocalStream(stream)
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+        }
+      }
+    })
+
+    return () => {
+      rtc.cleanup()
+    }
+  }, [user])
+
+  // 4. Start Local MediaPipe FaceMesh & AI Telemetry Engine
   useEffect(() => {
     aiServiceRef.current = new AIDetectorService()
     if (videoRef.current && canvasRef.current) {
@@ -154,36 +262,142 @@ export default function ClassroomMeetingPage() {
     }
   }, [])
 
-  // 3. Connect to WebSocket room and stream telemetry
+  // 5. Connect to Classroom WebSocket Infrastructure
   useEffect(() => {
-    if (!targetCode) return
+    if (!targetCode || !user) return
+
     const wsUrl = `${env.wsBaseUrl}/${targetCode}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
-      console.log(`[MindMap] Connected to classroom WebSocket: ${targetCode}`)
+      // Announce identity and join room
+      ws.send(
+        JSON.stringify({
+          type: 'join',
+          user_id: user.id,
+          user_name: user.name,
+          user_role: user.role,
+        })
+      )
     }
 
     ws.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data)
-        if (payload && payload.student_id && payload.student_id !== user?.id) {
+        if (!payload || typeof payload !== 'object') return
+
+        const msgType = payload.type
+
+        // A. Real-Time Chat Message
+        if (msgType === 'chat_message') {
+          setChatMessages((prev) => {
+            const exists = prev.some(
+              (m) => m.id === payload.id || (payload.temp_id && m.id === payload.temp_id)
+            )
+            if (exists) return prev
+            const newMsg: ChatMessage = {
+              id: payload.id || Math.random().toString(),
+              class_code: payload.class_code || targetCode,
+              sender_id: payload.sender_id || '',
+              sender_name: payload.sender_name || 'Anonymous',
+              sender_role: payload.sender_role || 'student',
+              text: payload.text || '',
+              timestamp: payload.timestamp || new Date().toISOString(),
+            }
+            return [...prev, newMsg]
+          })
+        }
+
+        // B. Peer Joined Room -> Initiate WebRTC Call
+        else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user.id) {
+          setPeers((prev) => {
+            const exists = prev.some((p) => p.id === payload.peer_id)
+            if (exists) return prev
+            return [
+              ...prev,
+              {
+                id: payload.peer_id,
+                name: payload.peer_name || 'Classmate',
+                email: '',
+                role: payload.peer_role || 'student',
+                attentionScore: 85,
+                confusionScore: 15,
+                isHandRaised: false,
+                isCameraOff: false,
+                isMuted: false,
+                isScreenSharing: false,
+                connectionStatus: 'ONLINE',
+                lastSeen: Date.now(),
+              },
+            ]
+          })
+
+          // As existing participant, initiate WebRTC offer to newcomer
+          if (webrtcRef.current) {
+            webrtcRef.current.initiateOffer(payload.peer_id)
+          }
+        }
+
+        // C. WebRTC Signaling Dispatch
+        else if (msgType === 'webrtc_signal' && payload.target_id === user.id) {
+          if (webrtcRef.current && payload.sender_id && payload.signal) {
+            webrtcRef.current.handleSignal(payload.sender_id, payload.signal)
+          }
+        }
+
+        // D. Peer Media Status Change (mic, camera, screen share)
+        else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== user.id) {
+          setPeers((prev) =>
+            prev.map((p) =>
+              p.id === payload.peer_id
+                ? {
+                    ...p,
+                    isCameraOff: !payload.is_camera_on,
+                    isMuted: !payload.is_mic_on,
+                    isScreenSharing: !!payload.is_screen_sharing,
+                  }
+                : p
+            )
+          )
+        }
+
+        // E. Peer Left Room
+        else if (msgType === 'peer_left' && payload.peer_id) {
+          if (webrtcRef.current) {
+            webrtcRef.current.removePeer(payload.peer_id)
+          }
+          setPeers((prev) => prev.filter((p) => p.id !== payload.peer_id))
+        }
+
+        // F. Screen Share Permission Update
+        else if (msgType === 'screen_share_permission') {
+          setIsOpenScreenShare(!!payload.is_open_to_all)
+          const allowed = Array.isArray(payload.allowed_students) && payload.allowed_students.includes(user.id)
+          setCanShareScreen(isTeacher || !!payload.is_open_to_all || allowed)
+        }
+
+        // G. Live Attention & Confusion Telemetry
+        else if (payload.student_id && payload.student_id !== user.id) {
           setPeers((prev) => {
             const idx = prev.findIndex((p) => p.id === payload.student_id)
             const item: PeerStudent = {
               id: payload.student_id,
               name: payload.student_name || 'Student',
               email: payload.student_email || '',
+              role: 'student',
               attentionScore: payload.attention_score ?? 85,
               confusionScore: payload.confusion_score ?? 15,
               isHandRaised: !!payload.is_hand_raised,
+              isCameraOff: payload.connection_status === 'CAMERA_MUTED',
+              isMuted: false,
+              isScreenSharing: false,
               connectionStatus: payload.connection_status || 'ONLINE',
               lastSeen: Date.now(),
             }
             if (idx >= 0) {
               const copy = [...prev]
-              copy[idx] = item
+              copy[idx] = { ...copy[idx], ...item }
               return copy
             } else {
               return [...prev, item]
@@ -191,16 +405,16 @@ export default function ClassroomMeetingPage() {
           })
         }
       } catch {
-        // ignore malformed message
+        // Safe ignore on malformed messages
       }
     }
 
     return () => {
       ws.close()
     }
-  }, [targetCode, user?.id])
+  }, [targetCode, user, isTeacher])
 
-  // 4. Emit periodic telemetry to WebSocket (every 2 seconds)
+  // 6. Emit Periodic Telemetry to WebSocket (every 2 seconds)
   useEffect(() => {
     const timer = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
@@ -227,43 +441,263 @@ export default function ClassroomMeetingPage() {
     return () => clearInterval(timer)
   }, [user, metrics, isHandRaised, isCameraOn])
 
-  const handleSendMessage = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newMessage.trim()) return
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(),
-        sender: user?.name || 'You',
-        text: newMessage,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isTeacher: user?.role === 'teacher',
-      },
-    ])
+  // 7. Chat Send Handler
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    const text = newMessage.trim()
+    if (!text || !user) return
+
+    if (text.length > 1000) {
+      showToast({ type: 'warning', title: 'Message too long', message: 'Maximum 1000 characters allowed.' })
+      return
+    }
+
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    // Emit over WebSocket if connected
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'chat_message',
+          sender_id: user.id,
+          sender_name: user.name,
+          sender_role: user.role,
+          text,
+          temp_id: tempId,
+        })
+      )
+    } else {
+      // Fallback to REST API
+      try {
+        const sent = await communicationApi.sendMessage(targetCode, text)
+        setChatMessages((prev) => [...prev, sent])
+      } catch (err: any) {
+        showToast({ type: 'danger', title: 'Send Failed', message: err.message || 'Unable to deliver message.' })
+        return
+      }
+    }
+
     setNewMessage('')
   }
 
+  // Handle keyboard submit in chat (Enter to send, Shift+Enter for new line)
+  const handleChatKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSendMessage()
+    }
+  }
+
+  // 8. Media Toggle Handlers
+  const handleToggleMic = () => {
+    const nextState = !isMicOn
+    setIsMicOn(nextState)
+    if (webrtcRef.current) {
+      webrtcRef.current.toggleAudio(nextState)
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'peer_status',
+          peer_id: user.id,
+          peer_name: user.name,
+          is_camera_on: isCameraOn,
+          is_mic_on: nextState,
+          is_screen_sharing: isScreenSharing,
+        })
+      )
+    }
+  }
+
+  const handleToggleCamera = () => {
+    const nextState = !isCameraOn
+    setIsCameraOn(nextState)
+    if (webrtcRef.current) {
+      webrtcRef.current.toggleVideo(nextState)
+    }
+    if (!nextState && aiServiceRef.current) {
+      aiServiceRef.current.stop()
+    } else if (nextState && aiServiceRef.current && videoRef.current && canvasRef.current) {
+      aiServiceRef.current.start(videoRef.current, canvasRef.current, (newMetrics) => {
+        setMetrics(newMetrics)
+      })
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'peer_status',
+          peer_id: user.id,
+          peer_name: user.name,
+          is_camera_on: nextState,
+          is_mic_on: isMicOn,
+          is_screen_sharing: isScreenSharing,
+        })
+      )
+    }
+  }
+
+  // 9. Screen Sharing Handlers
+  const handleToggleScreenShare = async () => {
+    if (!webrtcRef.current) return
+
+    if (isScreenSharing) {
+      // Stop screen share
+      webrtcRef.current.stopScreenShare()
+      setIsScreenSharing(false)
+      showToast({ type: 'info', title: 'Screen Share Ended', message: 'You stopped presenting your screen.' })
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'peer_status',
+            peer_id: user.id,
+            peer_name: user.name,
+            is_camera_on: isCameraOn,
+            is_mic_on: isMicOn,
+            is_screen_sharing: false,
+          })
+        )
+      }
+    } else {
+      // Check permissions
+      if (!isTeacher && !canShareScreen) {
+        showToast({
+          type: 'warning',
+          title: 'Permission Required',
+          message: 'The instructor has not enabled student screen sharing for this class.',
+        })
+        return
+      }
+
+      try {
+        await webrtcRef.current.startScreenShare(() => {
+          setIsScreenSharing(false)
+          showToast({ type: 'info', title: 'Screen Share Stopped', message: 'Display capture ended.' })
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'peer_status',
+                peer_id: user.id,
+                peer_name: user.name,
+                is_camera_on: isCameraOn,
+                is_mic_on: isMicOn,
+                is_screen_sharing: false,
+              })
+            )
+          }
+        })
+        setIsScreenSharing(true)
+        showToast({ type: 'success', title: 'Screen Share Active', message: 'Now sharing your screen with the class.' })
+
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'peer_status',
+              peer_id: user.id,
+              peer_name: user.name,
+              is_camera_on: isCameraOn,
+              is_mic_on: isMicOn,
+              is_screen_sharing: true,
+            })
+          )
+        }
+      } catch (err: any) {
+        showToast({ type: 'danger', title: 'Screen Share Failed', message: err.message || 'Could not start screen capture.' })
+      }
+    }
+  }
+
+  // Teacher Screen Sharing Permission Toggles
+  const handleTeacherToggleScreenPolicy = async () => {
+    if (!isTeacher) return
+    const nextState = !isOpenScreenShare
+    try {
+      await communicationApi.updateScreenSharePermission(targetCode, {
+        is_open_to_all: nextState,
+      })
+      setIsOpenScreenShare(nextState)
+      showToast({
+        type: 'info',
+        title: 'Screen Sharing Policy',
+        message: nextState ? 'All students can now share their screens.' : 'Student screen sharing is now restricted.',
+      })
+    } catch {
+      showToast({ type: 'danger', title: 'Update Failed', message: 'Unable to update screen sharing policy.' })
+    }
+  }
+
+  // 10. PDF Report Download Handler
+  const handleDownloadReport = async () => {
+    try {
+      setIsGeneratingReport(true)
+      const data = await communicationApi.getReportData(targetCode)
+
+      if (isTeacher) {
+        generateTeacherClassroomPDFReport(data as any)
+      } else {
+        generateStudentPersonalPDFReport(data as any)
+      }
+
+      showToast({
+        type: 'success',
+        title: 'PDF Report Downloaded',
+        message: 'Your official MindMap academic audit report has been saved.',
+      })
+    } catch (err: any) {
+      showToast({
+        type: 'danger',
+        title: 'Report Generation Failed',
+        message: err.message || 'Could not retrieve report data.',
+      })
+    } finally {
+      setIsGeneratingReport(false)
+    }
+  }
+
+  // 11. Leave Classroom
   const handleLeave = async () => {
-    if (user?.role === 'teacher' && classInfo) {
+    if (webrtcRef.current) {
+      webrtcRef.current.cleanup()
+    }
+    if (aiServiceRef.current) {
+      aiServiceRef.current.stop()
+    }
+
+    if (isTeacher && classInfo) {
       try {
         await classApi.endClass(classInfo.id)
         showToast({ type: 'info', title: 'Class Ended', message: 'You concluded the live session.' })
       } catch {
-        // fallback
+        // continue
       }
     } else {
       showToast({ type: 'info', title: 'Left Session', message: 'You disconnected from the classroom.' })
     }
-    navigate(user?.role === 'teacher' ? '/teacher/dashboard' : '/student/dashboard')
+    navigate(isTeacher ? '/teacher/dashboard' : '/student/dashboard')
   }
 
-  const isTeacher = user?.role === 'teacher'
   const classroomTitle = classInfo?.name || 'Live AI Classroom'
-  const roomCode = classInfo?.class_code || targetCode?.toUpperCase() || 'ROOM'
+  const roomCode = classInfo?.class_code || targetCode.toUpperCase() || 'ROOM'
   const instructorName = classInfo?.teacher_name || (isTeacher ? user?.name : 'Faculty Instructor')
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden flex-col">
+      {/* Active Screen Sharing Alert Banner */}
+      {isScreenSharing && (
+        <div className="bg-emerald-600 px-4 py-1.5 text-xs text-white flex items-center justify-between font-medium z-30 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+            <span>You are currently presenting your screen to the classroom.</span>
+          </div>
+          <button
+            onClick={handleToggleScreenShare}
+            className="bg-emerald-800 hover:bg-emerald-900 px-2.5 py-0.5 rounded text-[11px] font-bold"
+          >
+            Stop Sharing
+          </button>
+        </div>
+      )}
+
       {/* Top Meeting Header */}
       <header className="h-14 border-b border-slate-800 bg-slate-900 px-5 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
@@ -273,7 +707,9 @@ export default function ClassroomMeetingPage() {
           <div>
             <h1 className="text-sm font-bold text-white flex items-center gap-2">
               <span>{classroomTitle}</span>
-              <Badge variant="purple" size="sm" className="font-mono">{roomCode}</Badge>
+              <Badge variant="purple" size="sm" className="font-mono">
+                {roomCode}
+              </Badge>
             </h1>
             <span className="text-[11px] text-slate-400">{instructorName} • Live Session</span>
           </div>
@@ -281,15 +717,33 @@ export default function ClassroomMeetingPage() {
 
         {/* Live Metrics Summary */}
         <div className="hidden md:flex items-center gap-3 px-3 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-medium">
-          <span className="text-slate-300">My Attention: <strong className="text-emerald-400">{metrics.attentionScore}%</strong></span>
+          <span className="text-slate-300">
+            My Attention: <strong className="text-emerald-400">{metrics.attentionScore}%</strong>
+          </span>
           <span className="text-slate-600">|</span>
-          <span className="text-slate-300">Confusion: <strong className="text-purple-300">{metrics.confusionScore}%</strong></span>
+          <span className="text-slate-300">
+            Confusion: <strong className="text-purple-300">{metrics.confusionScore}%</strong>
+          </span>
           <span className="text-slate-600">|</span>
-          <Badge variant="live" size="sm" dot>LIVE</Badge>
+          <Badge variant="live" size="sm" dot>
+            LIVE
+          </Badge>
         </div>
 
         {/* Action Controls */}
         <div className="flex items-center gap-2">
+          {/* Download PDF Report */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownloadReport}
+            isLoading={isGeneratingReport}
+            leftIcon={<Icons.Download size={14} />}
+            className="text-xs"
+          >
+            PDF Report
+          </Button>
+
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium"
@@ -297,8 +751,13 @@ export default function ClassroomMeetingPage() {
           >
             {sidebarOpen ? 'Hide Panel' : 'Show Panel'}
           </button>
-          <Button variant="danger" size="sm" onClick={handleLeave} leftIcon={<Icons.PhoneOff size={15} />}>
-            {isTeacher ? 'End Session' : 'Leave Session'}
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={handleLeave}
+            leftIcon={<Icons.PhoneOff size={15} />}
+          >
+            {isTeacher ? 'End Session' : 'Leave'}
           </Button>
         </div>
       </header>
@@ -307,26 +766,28 @@ export default function ClassroomMeetingPage() {
       <div className="flex-1 flex min-h-0 relative">
         {/* Video Stage Grid */}
         <div className="flex-1 p-4 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-y-auto">
-          {/* Main Spotlight Tile */}
+          {/* Main Spotlight Tile (Instructor / Screen Presenter) */}
           <VideoTile
             name={instructorName || 'Instructor'}
             role="teacher"
             attentionScore={isTeacher ? metrics.attentionScore : 98}
             isMuted={false}
+            isScreenSharing={peers.some((p) => p.role === 'teacher' && p.isScreenSharing)}
             className="md:col-span-2 h-72 md:h-full min-h-[320px]"
           />
 
-          {/* Student Grid */}
+          {/* Connected Classroom Members Grid */}
           <div className="grid grid-cols-2 md:grid-cols-1 gap-3 overflow-y-auto">
             {/* Local User Tile */}
             <VideoTile
               name={`${user?.name || 'You'} (Me)`}
-              role={user?.role === 'teacher' ? 'teacher' : 'student'}
+              role={isTeacher ? 'teacher' : 'student'}
               attentionScore={metrics.attentionScore}
               confusionScore={metrics.confusionScore}
               isMuted={!isMicOn}
               isCameraOff={!isCameraOn}
               isHandRaised={isHandRaised}
+              isScreenSharing={isScreenSharing}
               isLocalUser={true}
               videoRef={videoRef}
               canvasRef={canvasRef}
@@ -338,17 +799,21 @@ export default function ClassroomMeetingPage() {
               <VideoTile
                 key={p.id}
                 name={p.name}
-                role="student"
+                role={p.role === 'teacher' ? 'teacher' : 'student'}
                 attentionScore={p.attentionScore}
                 confusionScore={p.confusionScore}
                 isHandRaised={p.isHandRaised}
+                isMuted={p.isMuted}
+                isCameraOff={p.isCameraOff}
+                isScreenSharing={p.isScreenSharing}
+                stream={p.stream}
                 className="h-44"
               />
             ))}
           </div>
         </div>
 
-        {/* Right Collapsible Drawer (AI Panel / Chat / Roster) */}
+        {/* Right Collapsible Drawer (AI Panel / Real-Time Chat / Roster) */}
         <AnimatePresence>
           {sidebarOpen && (
             <motion.aside
@@ -361,80 +826,205 @@ export default function ClassroomMeetingPage() {
               <div className="flex border-b border-slate-800 bg-slate-950/60">
                 <button
                   onClick={() => setActiveTab('ai')}
-                  className={`flex-1 py-2.5 text-xs font-medium ${activeTab === 'ai' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-slate-400'}`}
+                  className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                    activeTab === 'ai'
+                      ? 'text-blue-400 border-b-2 border-blue-400'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
                 >
                   AI Panel
                 </button>
                 <button
                   onClick={() => setActiveTab('chat')}
-                  className={`flex-1 py-2.5 text-xs font-medium ${activeTab === 'chat' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-slate-400'}`}
+                  className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                    activeTab === 'chat'
+                      ? 'text-blue-400 border-b-2 border-blue-400'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
                 >
                   Chat ({chatMessages.length})
                 </button>
                 <button
                   onClick={() => setActiveTab('participants')}
-                  className={`flex-1 py-2.5 text-xs font-medium ${activeTab === 'participants' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-slate-400'}`}
+                  className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+                    activeTab === 'participants'
+                      ? 'text-blue-400 border-b-2 border-blue-400'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
                 >
                   Roster ({peers.length + 1})
                 </button>
               </div>
 
               {/* Tab Contents */}
-              <div className="flex-1 p-4 overflow-y-auto text-slate-900">
+              <div className="flex-1 p-3.5 overflow-y-auto">
+                {/* 1. AI TELEMETRY PANEL */}
                 {activeTab === 'ai' && (
-                  <AIMonitoringPanel
-                    metrics={metrics}
-                    onStartCalibration={() => aiServiceRef.current?.startCalibration()}
-                  />
+                  <div className="text-slate-900">
+                    <AIMonitoringPanel
+                      metrics={metrics}
+                      onStartCalibration={() => aiServiceRef.current?.startCalibration()}
+                    />
+                  </div>
                 )}
 
+                {/* 2. REAL-TIME CHAT PANEL */}
                 {activeTab === 'chat' && (
-                  <div className="flex flex-col h-full justify-between gap-4">
-                    <div className="space-y-2.5 overflow-y-auto flex-1">
-                      {chatMessages.map((m) => (
-                        <div key={m.id} className="text-xs">
-                          <div className="flex items-center justify-between mb-0.5">
-                            <span className={`font-semibold ${m.isTeacher ? 'text-blue-400' : 'text-slate-200'}`}>{m.sender}</span>
-                            <span className="text-[10px] text-slate-500">{m.time}</span>
-                          </div>
-                          <p className="text-slate-300 bg-slate-800 p-2.5 rounded-lg border border-slate-700">{m.text}</p>
+                  <div className="flex flex-col h-full justify-between gap-3">
+                    {/* Chat Messages List */}
+                    <div className="space-y-3 overflow-y-auto flex-1 pr-1">
+                      {isLoadingChat ? (
+                        <div className="text-center py-8 text-xs text-slate-400">Loading messages...</div>
+                      ) : chatMessages.length === 0 ? (
+                        <div className="text-center py-10 px-4 text-xs text-slate-500">
+                          <Icons.MessageSquare className="mx-auto mb-2 opacity-50" size={24} />
+                          <p className="font-medium text-slate-400">No messages yet</p>
+                          <p className="mt-1">Send a message to start classroom discussion.</p>
                         </div>
-                      ))}
+                      ) : (
+                        chatMessages.map((m) => {
+                          const isMe = m.sender_id === user?.id
+                          const isSenderTeacher = m.sender_role === 'teacher' || m.sender_role === 'admin'
+                          return (
+                            <div
+                              key={m.id}
+                              className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                            >
+                              <div className="flex items-center gap-1.5 mb-1 px-1">
+                                <span
+                                  className={`text-[11px] font-semibold ${
+                                    isSenderTeacher ? 'text-amber-400' : isMe ? 'text-blue-400' : 'text-slate-300'
+                                  }`}
+                                >
+                                  {isMe ? 'You' : m.sender_name}
+                                </span>
+                                {isSenderTeacher && (
+                                  <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 rounded font-medium">
+                                    Teacher
+                                  </span>
+                                )}
+                                <span className="text-[10px] text-slate-500">
+                                  {new Date(m.timestamp).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
+                              <div
+                                className={`p-2.5 rounded-xl text-xs max-w-[88%] break-words whitespace-pre-wrap ${
+                                  isMe
+                                    ? 'bg-blue-600 text-white rounded-tr-none'
+                                    : 'bg-slate-800 text-slate-200 border border-slate-700/80 rounded-tl-none'
+                                }`}
+                              >
+                                {m.text}
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                      <div ref={chatBottomRef} />
                     </div>
 
-                    <form onSubmit={handleSendMessage} className="flex gap-2">
-                      <Input
-                        placeholder="Type message..."
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        className="text-xs"
-                      />
-                      <Button variant="primary" size="sm" type="submit">
-                        <Icons.Send size={15} />
-                      </Button>
+                    {/* Chat Input Box */}
+                    <form onSubmit={handleSendMessage} className="flex flex-col gap-1.5 pt-2 border-t border-slate-800">
+                      <div className="flex gap-2 items-center">
+                        <textarea
+                          placeholder="Type message... (Enter to send, Shift+Enter for new line)"
+                          value={newMessage}
+                          onChange={(e) => setNewMessage(e.target.value)}
+                          onKeyDown={handleChatKeyDown}
+                          rows={2}
+                          className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500 resize-none"
+                        />
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          type="submit"
+                          disabled={!newMessage.trim()}
+                          className="h-full px-3"
+                        >
+                          <Icons.Send size={15} />
+                        </Button>
+                      </div>
+                      <span className="text-[10px] text-slate-500 text-right">
+                        {newMessage.length}/1000
+                      </span>
                     </form>
                   </div>
                 )}
 
+                {/* 3. PARTICIPANTS / ROSTER PANEL */}
                 {activeTab === 'participants' && (
-                  <div className="space-y-2">
-                    {/* Self */}
+                  <div className="space-y-3">
+                    {/* Teacher Screen Sharing Permission Control Card */}
+                    {isTeacher && (
+                      <div className="p-3 rounded-lg bg-slate-850 border border-slate-800 text-xs mb-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-200">Allow Student Screen Sharing</span>
+                          <button
+                            onClick={handleTeacherToggleScreenPolicy}
+                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                              isOpenScreenShare ? 'bg-blue-600' : 'bg-slate-700'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                                isOpenScreenShare ? 'translate-x-4' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          {isOpenScreenShare
+                            ? 'All students in this room are currently permitted to share screen.'
+                            : 'Students must be authorized by teacher to present.'}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Self Roster Card */}
                     <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
                       <div className="flex items-center gap-2">
-                        <span className="font-semibold text-white">{user?.name || 'You'} (Me)</span>
+                        <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                        <div>
+                          <span className="font-semibold text-white">{user?.name || 'You'} (Me)</span>
+                          <span className="text-[10px] text-slate-400 block">{user?.role}</span>
+                        </div>
                         {isHandRaised && <Icons.Hand className="text-amber-500" size={14} />}
+                        {isScreenSharing && (
+                          <span className="text-[9px] bg-emerald-600/80 px-1 py-0.2 rounded text-white">
+                            Sharing
+                          </span>
+                        )}
                       </div>
                       <Badge variant={metrics.attentionScore >= 70 ? 'success' : 'danger'} size="sm">
                         {metrics.attentionScore}% Att.
                       </Badge>
                     </div>
 
-                    {/* Connected peers */}
+                    {/* Connected Classmates */}
                     {peers.map((s) => (
-                      <div key={s.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
+                      <div
+                        key={s.id}
+                        className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800 border border-slate-700 text-xs"
+                      >
                         <div className="flex items-center gap-2">
-                          <span className="font-semibold text-white">{s.name}</span>
+                          <div
+                            className={`h-2 w-2 rounded-full ${
+                              s.isCameraOff ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                          />
+                          <div>
+                            <span className="font-semibold text-white">{s.name}</span>
+                            <span className="text-[10px] text-slate-400 block">{s.role || 'Student'}</span>
+                          </div>
                           {s.isHandRaised && <Icons.Hand className="text-amber-500" size={14} />}
+                          {s.isScreenSharing && (
+                            <span className="text-[9px] bg-emerald-600/80 px-1 py-0.2 rounded text-white">
+                              Sharing
+                            </span>
+                          )}
                         </div>
                         <Badge variant={s.attentionScore >= 70 ? 'success' : 'danger'} size="sm">
                           {s.attentionScore}% Att.
@@ -451,58 +1041,75 @@ export default function ClassroomMeetingPage() {
 
       {/* Bottom Control Bar */}
       <footer className="h-14 border-t border-slate-800 bg-slate-900 px-6 flex items-center justify-center gap-3 shrink-0">
+        {/* Mic Toggle */}
         <button
-          onClick={() => setIsMicOn(!isMicOn)}
+          onClick={handleToggleMic}
           className={`p-2.5 rounded-lg border transition-colors ${
-            isMicOn ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-red-600 text-white border-red-600'
+            isMicOn
+              ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
+              : 'bg-red-600 text-white border-red-600'
           }`}
-          title={isMicOn ? 'Mute Mic' : 'Unmute Mic'}
+          title={isMicOn ? 'Mute Microphone' : 'Unmute Microphone'}
         >
           {isMicOn ? <Icons.Mic size={18} /> : <Icons.MicOff size={18} />}
         </button>
 
+        {/* Camera Toggle */}
         <button
-          onClick={() => {
-            const nextState = !isCameraOn
-            setIsCameraOn(nextState)
-            if (!nextState && aiServiceRef.current) {
-              aiServiceRef.current.stop()
-            }
-          }}
+          onClick={handleToggleCamera}
           className={`p-2.5 rounded-lg border transition-colors ${
-            isCameraOn ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-red-600 text-white border-red-600'
+            isCameraOn
+              ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
+              : 'bg-red-600 text-white border-red-600'
           }`}
           title={isCameraOn ? 'Turn Off Camera' : 'Turn On Camera'}
         >
           {isCameraOn ? <Icons.Video size={18} /> : <Icons.VideoOff size={18} />}
         </button>
 
+        {/* Screen Share Toggle */}
         <button
-          onClick={() => {
-            setIsScreenSharing(!isScreenSharing)
-            showToast({ type: 'info', title: 'Screen Share', message: isScreenSharing ? 'Stopped sharing' : 'Started sharing' })
-          }}
+          onClick={handleToggleScreenShare}
           className={`p-2.5 rounded-lg border transition-colors ${
-            isScreenSharing ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
+            isScreenSharing
+              ? 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-400'
+              : canShareScreen
+              ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
+              : 'bg-slate-850 border-slate-800 text-slate-500 cursor-not-allowed'
           }`}
-          title="Share Screen"
+          title={
+            isScreenSharing
+              ? 'Stop Sharing Screen'
+              : canShareScreen
+              ? 'Share Screen'
+              : 'Screen sharing requires teacher permission'
+          }
         >
           <Icons.ScreenShare size={18} />
         </button>
 
+        {/* Raise Hand Toggle */}
         <button
           onClick={() => {
-            setIsHandRaised(!isHandRaised)
-            showToast({ type: 'warning', title: 'Hand Raised', message: isHandRaised ? 'Lowered hand' : 'Raised hand' })
+            const next = !isHandRaised
+            setIsHandRaised(next)
+            showToast({
+              type: 'warning',
+              title: 'Hand Raised',
+              message: next ? 'You raised your hand.' : 'You lowered your hand.',
+            })
           }}
           className={`p-2.5 rounded-lg border transition-colors ${
-            isHandRaised ? 'bg-amber-500 text-slate-950 font-bold border-amber-500' : 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
+            isHandRaised
+              ? 'bg-amber-500 text-slate-950 font-bold border-amber-500'
+              : 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700'
           }`}
           title="Raise Hand"
         >
           <Icons.Hand size={18} />
         </button>
 
+        {/* Leave Session */}
         <Button variant="danger" size="sm" className="ml-4" onClick={handleLeave}>
           {isTeacher ? 'End Session' : 'Leave Room'}
         </Button>

@@ -28,6 +28,23 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PORT", "port"),
     )
 
+    webrtc_stun_server: str = Field(
+        default="stun:stun.l.google.com:19302",
+        validation_alias=AliasChoices("WEBRTC_STUN_SERVER", "webrtc_stun_server"),
+    )
+    webrtc_turn_server: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEBRTC_TURN_SERVER", "webrtc_turn_server"),
+    )
+    webrtc_turn_username: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEBRTC_TURN_USERNAME", "webrtc_turn_username"),
+    )
+    webrtc_turn_credential: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEBRTC_TURN_CREDENTIAL", "webrtc_turn_credential"),
+    )
+
     frontend_url: str = Field(
         default="https://mind-map-real-time-student-attention.vercel.app",
         validation_alias=AliasChoices("FRONTEND_URL", "frontend_url"),
