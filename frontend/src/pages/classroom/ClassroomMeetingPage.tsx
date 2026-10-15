@@ -74,6 +74,9 @@ export default function ClassroomMeetingPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const aiServiceRef = useRef<AIDetectorService | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  // Gates WebRTC offers until local media is available
+  const localMediaReadyRef = useRef(false)
+  const pendingOffersRef = useRef<string[]>([])
 
   // AI Telemetry Initialization
   const initialVector = FaceMeshFeatureExtractor.getEmptyFeatureVector()
@@ -260,44 +263,50 @@ export default function ClassroomMeetingPage() {
       }
     )
 
-    // Acquire camera & microphone and start local media once
-    rtc.startLocalMedia().then(async (stream) => {
-      if (!isMounted) return
-      if (stream) {
-        setLocalStream(stream)
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          try {
-            await videoRef.current.play()
-          } catch {
-            // Autoplay handled
+      // Acquire camera & microphone and start local media once
+      rtc.startLocalMedia().then(async (stream) => {
+        if (!isMounted) return
+        if (stream) {
+          setLocalStream(stream)
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream
+            try {
+              await videoRef.current.play()
+            } catch {
+              // Autoplay handled
+            }
           }
         }
-      }
-      // Start AI Detection with resilient DOM attachment retry (prevents Windows camera device lock collision)
-      const tryStartAI = () => {
-        if (!isMounted) return
-        const videoEl = videoRef.current
-        const canvasEl = canvasRef.current
-        if (videoEl) {
-          aiService.start(
-            videoEl,
-            canvasEl,
-            (newMetrics) => {
-              if (isMounted) {
-                setMetrics(newMetrics)
-              }
-            },
-            stream
-          ).catch((err) => {
-            console.error('[MindMap AI] Error starting aiService:', err)
-          })
-        } else {
-          setTimeout(tryStartAI, 100)
+        // Mark local media ready and flush deferred offers
+        localMediaReadyRef.current = true
+        const pending = pendingOffersRef.current.splice(0)
+        pending.forEach((peerId) => {
+          if (webrtcRef.current) webrtcRef.current.initiateOffer(peerId)
+        })
+        // Start AI Detection with resilient DOM attachment retry (prevents Windows camera device lock collision)
+        const tryStartAI = () => {
+          if (!isMounted) return
+          const videoEl = videoRef.current
+          const canvasEl = canvasRef.current
+          if (videoEl) {
+            aiService.start(
+              videoEl,
+              canvasEl,
+              (newMetrics) => {
+                if (isMounted) {
+                  setMetrics(newMetrics)
+                }
+              },
+              stream
+            ).catch((err) => {
+              console.error('[MindMap AI] Error starting aiService:', err)
+            })
+          } else {
+            setTimeout(tryStartAI, 100)
+          }
         }
-      }
-      tryStartAI()
-    })
+        tryStartAI()
+      })
 
     return () => {
       isMounted = false
@@ -415,9 +424,13 @@ export default function ClassroomMeetingPage() {
                   },
                 ]
               })
-              // If teacher, initiate offer to newly found peer
-              if (webrtcRef.current && (user.role === 'teacher' || user.role === 'admin')) {
-                webrtcRef.current.initiateOffer(peer.peer_id)
+              // If teacher, initiate offer to newly found peer — deferred if local media not ready
+              if (webrtcRef.current) {
+                if (localMediaReadyRef.current) {
+                  webrtcRef.current.initiateOffer(peer.peer_id)
+                } else {
+                  pendingOffersRef.current.push(peer.peer_id)
+                }
               }
             })
           }
@@ -452,9 +465,13 @@ export default function ClassroomMeetingPage() {
               ]
             })
 
-            // As existing participant, initiate WebRTC offer to newcomer
+            // As existing participant, initiate WebRTC offer to newcomer (deferred if local media not ready)
             if (webrtcRef.current) {
-              webrtcRef.current.initiateOffer(payload.peer_id)
+              if (localMediaReadyRef.current) {
+                webrtcRef.current.initiateOffer(payload.peer_id)
+              } else {
+                pendingOffersRef.current.push(payload.peer_id)
+              }
             }
           }
 

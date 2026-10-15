@@ -62,6 +62,7 @@ export default function TeacherLiveMonitoringPage() {
 
   // Media & Screen Sharing State
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  const [displayStream, setDisplayStream] = useState<MediaStream | null>(null)
   const [isMicOn, setIsMicOn] = useState(true)
   const [isCameraOn, setIsCameraOn] = useState(true)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
@@ -72,6 +73,10 @@ export default function TeacherLiveMonitoringPage() {
   const wsRef = useRef<WebSocket | null>(null)
   const webrtcRef = useRef<WebRTCService | null>(null)
   const localVideoRef = useRef<HTMLVideoElement>(null)
+  // Tracks whether local media is ready so WebRTC offers are not sent prematurely
+  const localMediaReadyRef = useRef(false)
+  // Buffer of peer IDs that need an offer once local media is ready
+  const pendingOffersRef = useRef<string[]>([])
 
   useEffect(() => {
     if (classId) {
@@ -186,6 +191,12 @@ export default function TeacherLiveMonitoringPage() {
           localVideoRef.current.play().catch(() => {})
         }
       }
+      // Mark local media as ready and flush buffered WebRTC offers
+      localMediaReadyRef.current = true
+      const pending = pendingOffersRef.current.splice(0)
+      pending.forEach((peerId) => {
+        if (webrtcRef.current) webrtcRef.current.initiateOffer(peerId)
+      })
     })
   }
 
@@ -258,8 +269,11 @@ export default function TeacherLiveMonitoringPage() {
                   },
                 ]
               })
-              if (webrtcRef.current) {
+              // Only initiate offer once local media is ready to avoid sending an empty SDP
+              if (localMediaReadyRef.current && webrtcRef.current) {
                 webrtcRef.current.initiateOffer(peer.peer_id)
+              } else {
+                pendingOffersRef.current.push(peer.peer_id)
               }
             })
           }
@@ -289,9 +303,11 @@ export default function TeacherLiveMonitoringPage() {
               ]
             })
 
-            // Teacher as existing participant initiates WebRTC mesh call
-            if (webrtcRef.current) {
+            // Teacher as existing participant initiates WebRTC mesh call (deferred if local media not ready)
+            if (localMediaReadyRef.current && webrtcRef.current) {
               webrtcRef.current.initiateOffer(payload.peer_id)
+            } else {
+              pendingOffersRef.current.push(payload.peer_id)
             }
           }
 
@@ -467,6 +483,7 @@ export default function TeacherLiveMonitoringPage() {
     if (isScreenSharing) {
       webrtcRef.current.stopScreenShare()
       setIsScreenSharing(false)
+      setDisplayStream(null)
       showToast({ type: 'info', title: 'Screen Share Ended', message: 'You stopped presenting your screen.' })
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
@@ -485,8 +502,9 @@ export default function TeacherLiveMonitoringPage() {
       }
     } else {
       try {
-        await webrtcRef.current.startScreenShare(() => {
+        const screenStream = await webrtcRef.current.startScreenShare(() => {
           setIsScreenSharing(false)
+          setDisplayStream(null)
           showToast({ type: 'info', title: 'Screen Share Stopped', message: 'Display capture ended.' })
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
             wsRef.current.send(
@@ -503,6 +521,9 @@ export default function TeacherLiveMonitoringPage() {
             )
           }
         })
+        if (screenStream) {
+          setDisplayStream(screenStream)
+        }
         setIsScreenSharing(true)
         showToast({ type: 'success', title: 'Screen Share Active', message: 'Now presenting your screen to the class.' })
 
@@ -800,15 +821,15 @@ export default function TeacherLiveMonitoringPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {/* Teacher's Local Video Tile */}
+            {/* Teacher's Local Video Tile: shows screen share stream when presenting, camera otherwise */}
             <VideoTile
-              name={`${user?.name || 'Instructor'} (You)`}
+              name={isScreenSharing ? `${user?.name || 'Instructor'} (Presenting)` : `${user?.name || 'Instructor'} (You)`}
               role="teacher"
               isLocalUser={true}
-              stream={localStream}
-              videoRef={localVideoRef}
+              stream={isScreenSharing && displayStream ? displayStream : localStream}
+              videoRef={isScreenSharing && displayStream ? undefined : localVideoRef}
               isMuted={!isMicOn}
-              isCameraOff={!isCameraOn}
+              isCameraOff={!isCameraOn && !isScreenSharing}
               isScreenSharing={isScreenSharing}
               className="h-48"
             />
