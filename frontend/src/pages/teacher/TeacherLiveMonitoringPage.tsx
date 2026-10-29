@@ -368,6 +368,7 @@ export default function TeacherLiveMonitoringPage() {
           }
 
           // F. Student AI Telemetry Stream
+          // Matches payloads with type='telemetry' OR containing student_id/attention fields
           if (
             payload.student_id ||
             payload.type === 'telemetry' ||
@@ -385,13 +386,24 @@ export default function TeacherLiveMonitoringPage() {
             const confVal = confRaw !== undefined ? Math.round(Number(confRaw)) : 15
 
             const isCamActive =
-              payload.connection_status === 'ONLINE' ||
               payload.camera_active === true ||
+              payload.connection_status === 'ONLINE' ||
               (payload.camera_active !== false && payload.connection_status !== 'CAMERA_MUTED')
 
-            // Update live telemetry roster
+            // Diagnostic: log first few telemetry payloads to verify ID matching
+            if (process.env.NODE_ENV !== 'production') {
+              console.debug(
+                `[Teacher WS Telemetry] student_id="${studentId}" name="${studentName}" att=${attVal} conf=${confVal}`
+              )
+            }
+
+            // Update live telemetry roster — match by id OR name for resilience
             setLiveStudents((prev) => {
-              const existingIdx = prev.findIndex((s) => s.id === studentId || s.name === studentName)
+              const existingIdx = prev.findIndex(
+                (s) =>
+                  (studentId && (s.id === studentId || s.id === payload.student_id)) ||
+                  (studentName && s.name === studentName)
+              )
               const updatedStudent: LiveStudent = {
                 id: studentId || studentName,
                 name: studentName,
@@ -407,11 +419,12 @@ export default function TeacherLiveMonitoringPage() {
                 next[existingIdx] = updatedStudent
                 return next
               } else {
+                // Add new student seen via live telemetry (may not be in roster yet)
                 return [updatedStudent, ...prev]
               }
             })
 
-            // Update peer card scores
+            // Also update peer card attention/confusion badges
             setPeers((prev) =>
               prev.map((p) =>
                 p.id === studentId || p.name === studentName

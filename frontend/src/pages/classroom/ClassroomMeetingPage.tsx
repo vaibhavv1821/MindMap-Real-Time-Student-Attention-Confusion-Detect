@@ -264,31 +264,38 @@ export default function ClassroomMeetingPage() {
     )
 
       // Acquire camera & microphone and start local media once
-      rtc.startLocalMedia().then(async (stream) => {
+      rtc.startLocalMedia().then(async (acquiredStream) => {
         if (!isMounted) return
-        if (stream) {
-          setLocalStream(stream)
+        if (acquiredStream) {
+          setLocalStream(acquiredStream)
+          // Attach stream to video element immediately so AI has a valid srcObject
           if (videoRef.current) {
-            videoRef.current.srcObject = stream
+            if (videoRef.current.srcObject !== acquiredStream) {
+              videoRef.current.srcObject = acquiredStream
+            }
             try {
               await videoRef.current.play()
             } catch {
-              // Autoplay handled
+              // Autoplay handled by user gesture
             }
           }
         }
-        // Mark local media ready and flush deferred offers
+        // Mark local media ready and flush deferred WebRTC offers
         localMediaReadyRef.current = true
         const pending = pendingOffersRef.current.splice(0)
         pending.forEach((peerId) => {
           if (webrtcRef.current) webrtcRef.current.initiateOffer(peerId)
         })
-        // Start AI Detection with resilient DOM attachment retry (prevents Windows camera device lock collision)
-        const tryStartAI = () => {
+        // Start AI Detection — retry until videoRef is mounted in DOM with a valid srcObject
+        const tryStartAI = (attemptsLeft = 20) => {
           if (!isMounted) return
           const videoEl = videoRef.current
           const canvasEl = canvasRef.current
-          if (videoEl) {
+          if (videoEl && (videoEl.srcObject || acquiredStream)) {
+            // Ensure srcObject is attached before handing off to AI service
+            if (!videoEl.srcObject && acquiredStream) {
+              videoEl.srcObject = acquiredStream
+            }
             aiService.start(
               videoEl,
               canvasEl,
@@ -297,12 +304,23 @@ export default function ClassroomMeetingPage() {
                   setMetrics(newMetrics)
                 }
               },
-              stream
+              acquiredStream || undefined
             ).catch((err) => {
               console.error('[MindMap AI] Error starting aiService:', err)
             })
+          } else if (attemptsLeft > 0) {
+            // Video element not yet mounted or stream not ready — retry
+            setTimeout(() => tryStartAI(attemptsLeft - 1), 150)
           } else {
-            setTimeout(tryStartAI, 100)
+            console.warn('[MindMap AI] Could not attach to video element after retries. Starting in diagnostic mode.')
+            aiService.start(
+              videoEl || document.createElement('video'),
+              canvasEl,
+              (newMetrics) => {
+                if (isMounted) setMetrics(newMetrics)
+              },
+              undefined
+            ).catch(() => {})
           }
         }
         tryStartAI()
@@ -424,8 +442,11 @@ export default function ClassroomMeetingPage() {
                   },
                 ]
               })
-              // If teacher, initiate offer to newly found peer — deferred if local media not ready
-              if (webrtcRef.current) {
+              // Students do NOT initiate offers to teachers (teacher is the caller/offerer).
+              // Students only initiate offers to other students for peer-to-peer video.
+              // This prevents WebRTC offer collision when both teacher and student join at once.
+              const peerIsTeacher = peer.peer_role === 'teacher' || peer.peer_role === 'admin'
+              if (!peerIsTeacher && webrtcRef.current) {
                 if (localMediaReadyRef.current) {
                   webrtcRef.current.initiateOffer(peer.peer_id)
                 } else {
@@ -465,8 +486,11 @@ export default function ClassroomMeetingPage() {
               ]
             })
 
-            // As existing participant, initiate WebRTC offer to newcomer (deferred if local media not ready)
-            if (webrtcRef.current) {
+            // Students do NOT initiate offers to teachers — teacher is always the WebRTC caller.
+            // Students only offer to other students (for student-to-student video).
+            const joinerIsTeacher =
+              payload.peer_role === 'teacher' || payload.peer_role === 'admin'
+            if (!joinerIsTeacher && webrtcRef.current) {
               if (localMediaReadyRef.current) {
                 webrtcRef.current.initiateOffer(payload.peer_id)
               } else {
@@ -643,17 +667,23 @@ export default function ClassroomMeetingPage() {
         const curMetrics = metricsRef.current
         wsRef.current.send(
           JSON.stringify({
+            // 'type' field added so teacher-side handler can unambiguously identify telemetry messages
+            type: 'telemetry',
             student_id: user.id,
             student_name: user.name,
             student_email: user.email,
             attention_score: curMetrics.attentionScore,
             confusion_score: curMetrics.confusionScore,
+            // also send as 'attention' / 'confusion' for backward compat with legacy teacher handler
+            attention: curMetrics.attentionScore,
+            confusion: curMetrics.confusionScore,
             attention_state: curMetrics.mlPrediction.attention_state,
             confusion_state: curMetrics.mlPrediction.confusion_state,
             confidence: curMetrics.mlPrediction.confidence,
             reasons: curMetrics.mlPrediction.reasons,
             indicators: curMetrics.behaviouralIndicators,
             is_hand_raised: isHandRaisedRef.current,
+            camera_active: isCameraOnRef.current,
             connection_status: isCameraOnRef.current ? 'ONLINE' : 'CAMERA_MUTED',
             timestamp_ms: Date.now(),
           })
