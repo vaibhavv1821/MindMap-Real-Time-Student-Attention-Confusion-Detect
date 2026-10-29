@@ -1,3 +1,5 @@
+from urllib.parse import unquote
+import re
 import random
 import string
 from datetime import datetime, timezone
@@ -30,6 +32,7 @@ from app.schemas.classroom import (
 )
 from app.core.config import settings
 from app.features.connection_manager import manager
+from app.routers.features import normalize_room_key
 from app.schemas.communication import (
     ChatMessageIn,
     ChatMessageOut,
@@ -680,8 +683,11 @@ async def get_class_analytics(
 
 async def _get_authorized_class_doc(class_id_or_code: str, user: dict, db):
     """Fetches classroom and verifies requester is enrolled or teacher or admin."""
-    query = {"_id": ObjectId(class_id_or_code)} if ObjectId.is_valid(class_id_or_code) else {"class_code": class_id_or_code.upper()}
+    clean_val = unquote(str(class_id_or_code or "")).strip()
+    query = {"_id": ObjectId(clean_val)} if ObjectId.is_valid(clean_val) else {"class_code": clean_val.upper()}
     class_doc = await db["classes"].find_one(query)
+    if not class_doc and not ObjectId.is_valid(clean_val):
+        class_doc = await db["classes"].find_one({"class_code": {"$regex": f"^{re.escape(clean_val)}$", "$options": "i"}})
     if not class_doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Classroom not found")
 
@@ -770,7 +776,7 @@ async def send_classroom_message(
     result = await db["classroom_messages"].insert_one(doc)
     msg_id = str(result.inserted_id)
 
-    room_key = f"room_{class_code.lower()}"
+    room_key = normalize_room_key(class_code)
     await manager.broadcast({
         "type": "chat_message",
         "id": msg_id,
@@ -860,7 +866,7 @@ async def update_screen_share_permission(
         upsert=True,
     )
 
-    room_key = f"room_{class_code.lower()}"
+    room_key = normalize_room_key(class_code)
     await manager.broadcast({
         "type": "screen_share_permission",
         "is_open_to_all": is_open,

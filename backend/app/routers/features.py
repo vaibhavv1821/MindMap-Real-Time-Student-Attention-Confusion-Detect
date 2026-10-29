@@ -87,9 +87,17 @@ class TelemetryConnectionManager:
                 except Exception:
                     pass
 
+from urllib.parse import unquote
+import re
 from app.features.connection_manager import manager, ClassroomConnectionManager
 
 TelemetryConnectionManager = ClassroomConnectionManager
+
+def normalize_room_key(code: str) -> str:
+    """Normalizes class codes so all clients land in the identical WebSocket room."""
+    unquoted = unquote(str(code or ""))
+    cleaned = re.sub(r"\s+", " ", unquoted).strip().lower()
+    return f"room_{cleaned}"
 
 @router.websocket("/ws/{class_code}")
 async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
@@ -97,7 +105,7 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
     WebSocket endpoint for real-time classroom telemetry, chat, and WebRTC signaling.
     Zero video bytes accepted. Signaling and numerical telemetry only.
     """
-    room_key = f"room_{class_code.lower()}"
+    room_key = normalize_room_key(class_code)
     await manager.connect(websocket, room_key)
     try:
         while True:
@@ -362,13 +370,31 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                     from datetime import datetime, timezone
                     db = get_db()
                     now = datetime.now(timezone.utc)
-                    code_clean = class_code.strip().upper()
-                    active_session = await db["sessions"].find_one({
-                        "class_code": code_clean,
-                        "status": "LIVE"
-                    })
-                    if active_session:
-                        s_id = str(active_session["_id"])
+                    code_clean = unquote(class_code).strip().upper()
+                    class_doc = await db["classes"].find_one({"class_code": code_clean})
+                    if class_doc:
+                        real_class_id = str(class_doc["_id"])
+                        active_session = await db["sessions"].find_one({
+                            "class_id": real_class_id,
+                            "status": "LIVE"
+                        })
+                        if not active_session:
+                            sess_res = await db["sessions"].insert_one({
+                                "class_id": real_class_id,
+                                "class_code": code_clean,
+                                "teacher_id": class_doc.get("teacher_id"),
+                                "status": "LIVE",
+                                "started_at": now,
+                                "peak_students": 1,
+                            })
+                            await db["classes"].update_one(
+                                {"_id": class_doc["_id"]},
+                                {"$set": {"status": "LIVE"}}
+                            )
+                            s_id = str(sess_res.inserted_id)
+                        else:
+                            s_id = str(active_session["_id"])
+
                         await db["session_participants"].update_one(
                             {"session_id": s_id, "student_id": str(data["student_id"])},
                             {
@@ -377,11 +403,12 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                                     "avg_confusion": float(data.get("confusion_score", 0)),
                                     "student_name": data.get("student_name", "Student"),
                                     "student_email": data.get("student_email", ""),
-                                    "status": "PRESENT"
+                                    "status": "PRESENT",
+                                    "last_seen": now,
                                 },
                                 "$setOnInsert": {
                                     "joined_at": now,
-                                    "class_id": active_session["class_id"]
+                                    "class_id": real_class_id
                                 }
                             },
                             upsert=True

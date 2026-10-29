@@ -344,7 +344,7 @@ export default function ClassroomMeetingPage() {
 
     function connectWs() {
       if (!isMounted || !targetCode || !user) return
-      let wsUrl = `${env.wsBaseUrl}/${targetCode}`
+      let wsUrl = `${env.wsBaseUrl}/${encodeURIComponent(targetCode.trim())}`
 
       // On HTTPS, strictly enforce wss:// to prevent browser SecurityError (Mixed Content)
       if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
