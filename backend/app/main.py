@@ -40,6 +40,10 @@ app = FastAPI(
 origins: list[str] = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://mindmap.devanshupatil.tech",
+    "http://mindmap.devanshupatil.tech",
     "https://mind-map-real-time-student-attention.vercel.app",
     "https://mind-map-real-time-student-attention-confusion-detec-v4190kg8.vercel.app",
     "https://mindmap-real-time-student-attention-confusion-detector-v4lfg.vercel.app",
@@ -65,7 +69,7 @@ for item in (settings.get_cors_origins() if hasattr(settings, "get_cors_origins"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https:\/\/.*\.vercel\.app",
+    allow_origin_regex=r"^https?:\/\/.*",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "*"],
     allow_headers=[
@@ -91,9 +95,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     headers = {}
     origin = request.headers.get("origin")
     if origin:
-        if origin in origins or re.fullmatch(r"https:\/\/.*\.vercel\.app", origin):
-            headers["Access-Control-Allow-Origin"] = origin
-            headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Access-Control-Allow-Headers"] = "*"
+        headers["Access-Control-Allow-Methods"] = "*"
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error. Check server logs for details."},
