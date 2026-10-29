@@ -52,6 +52,8 @@ export default function TeacherLiveMonitoringPage() {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const { user } = useAuthContext()
+  const userRef = useRef(user)
+  userRef.current = user
 
   const [classData, setClassData] = useState<ClassItem | null>(null)
   const [liveStudents, setLiveStudents] = useState<LiveStudent[]>([])
@@ -76,6 +78,7 @@ export default function TeacherLiveMonitoringPage() {
   // Buffer of peer IDs that need an offer once local media is ready
   const pendingOffersRef = useRef<string[]>([])
 
+  // Initialize Session Data and WebRTC service
   useEffect(() => {
     if (classId) {
       initSession(classId)
@@ -84,14 +87,11 @@ export default function TeacherLiveMonitoringPage() {
       if (webrtcRef.current) {
         webrtcRef.current.cleanup()
       }
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
     }
   }, [classId])
 
   // Periodic background telemetry sync with MongoDB Atlas (every 3.5s)
-  // Ensures scores and attendance continuously update even during brief WebSocket re-negotiations
+  // Preserves fresh in-memory live scores while updating roster
   useEffect(() => {
     if (!classId) return
     const syncTimer = setInterval(async () => {
@@ -106,13 +106,35 @@ export default function TeacherLiveMonitoringPage() {
                   (s.email && p.email && p.email.toLowerCase().trim() === s.email.toLowerCase().trim()) ||
                   (s.name && p.name && p.name.toLowerCase().trim() === s.name.toLowerCase().trim())
               )
-              const hasOnline = s.connection_status === 'ONLINE' || (existing?.cameraActive ?? false)
+              // If we received live telemetry within the last 15 seconds, PRESERVE IT!
+              const hasRecentTelemetry =
+                existing &&
+                existing.lastSeen &&
+                Date.now() - new Date(existing.lastSeen).getTime() < 15000
+
+              const att = hasRecentTelemetry
+                ? existing.attention
+                : s.avg_attention > 0
+                ? Math.round(s.avg_attention)
+                : existing?.attention ?? 85
+
+              const conf = hasRecentTelemetry
+                ? existing.confusion
+                : s.avg_confusion > 0
+                ? Math.round(s.avg_confusion)
+                : existing?.confusion ?? 15
+
+              const hasOnline =
+                hasRecentTelemetry ||
+                s.connection_status === 'ONLINE' ||
+                (existing?.cameraActive ?? false)
+
               return {
                 id: s.student_id,
                 name: s.name,
                 email: s.email,
-                attention: s.avg_attention > 0 ? Math.round(s.avg_attention) : (existing?.attention ?? 85),
-                confusion: s.avg_confusion > 0 ? Math.round(s.avg_confusion) : (existing?.confusion ?? 15),
+                attention: att,
+                confusion: conf,
                 cameraActive: hasOnline,
                 lastSeen: existing?.lastSeen || new Date(),
                 indicator: existing?.indicator,
@@ -157,9 +179,6 @@ export default function TeacherLiveMonitoringPage() {
 
       // Initialize WebRTC Manager
       initWebRTC()
-
-      // Connect to classroom WebSocket room
-      connectWebSocket(details.class_code)
     } catch (err: any) {
       showToast({ type: 'danger', title: 'Session Error', message: err.message || 'Failed to initialize session' })
     } finally {
@@ -176,13 +195,14 @@ export default function TeacherLiveMonitoringPage() {
     rtc.setCallbacks(
       // Send signal via WebSocket
       (targetId, signal) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        const currentUser = userRef.current
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUser) {
           wsRef.current.send(
             JSON.stringify({
               type: 'webrtc_signal',
               target_id: targetId,
-              sender_id: user.id,
-              sender_name: user.name,
+              sender_id: currentUser.id,
+              sender_name: currentUser.name,
               sender_role: 'teacher',
               signal,
             })
@@ -244,51 +264,71 @@ export default function TeacherLiveMonitoringPage() {
   }
 
   // 2. Connect to Classroom WebSocket Infrastructure with auto-reconnect
-  const connectWebSocket = (roomCode: string) => {
-    let isMountedWs = true
+  // Dedicated reactive effect dependent on classData?.class_code
+  useEffect(() => {
+    const rawCode = classData?.class_code
+    if (!rawCode) return
+    const targetRoom = rawCode.trim()
+
+    let isMounted = true
+    let reconnectTimeout: any = null
     let reconnectAttempts = 0
-    const maxReconnectAttempts = 8
 
-    function connectWsInner() {
-      if (!isMountedWs) return
-      try {
-        let wsUrl = `${env.wsBaseUrl}/${encodeURIComponent(roomCode.trim())}`
-        if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
-          wsUrl = wsUrl.replace(/^ws:\/\//i, 'wss://')
-        }
+    function connectWs() {
+      if (!isMounted) return
 
-        let ws: WebSocket
+      // Cleanly teardown any prior socket
+      if (wsRef.current) {
         try {
-          ws = new WebSocket(wsUrl)
-        } catch (innerErr) {
-          if (wsUrl.startsWith('ws://')) {
-            ws = new WebSocket(wsUrl.replace(/^ws:\/\//i, 'wss://'))
-          } else {
-            throw innerErr
-          }
-        }
-        wsRef.current = ws
+          wsRef.current.onopen = null
+          wsRef.current.onmessage = null
+          wsRef.current.onerror = null
+          wsRef.current.onclose = null
+          wsRef.current.close()
+        } catch { }
+      }
 
-        ws.onopen = () => {
-          reconnectAttempts = 0
-          setIsConnected(true)
-          const token = localStorage.getItem('access_token') || ''
-          ws.send(
-            JSON.stringify({
-              type: 'join',
-              user_id: user?.id,
-              user_name: user?.name || 'Instructor',
-              user_role: 'teacher',
-              token,
-            })
-          )
-          // Request existing peers in room
-          ws.send(
-            JSON.stringify({
-              type: 'get_peers',
-            })
-          )
+      const wsUrl = `${env.wsBaseUrl}/${encodeURIComponent(targetRoom)}`
+      console.log('[Teacher WS] Connecting to:', wsUrl)
+
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch (err) {
+        console.error('[Teacher WS] WebSocket construct error:', err)
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connectWs, 3000)
         }
+        return
+      }
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        if (!isMounted) {
+          try { ws.close() } catch { }
+          return
+        }
+        console.log('[Teacher WS] Connected successfully to room:', targetRoom)
+        reconnectAttempts = 0
+        setIsConnected(true)
+        const currentUser = userRef.current
+        const token = localStorage.getItem('access_token') || ''
+        ws.send(
+          JSON.stringify({
+            type: 'join',
+            user_id: currentUser?.id || 'teacher_instructor',
+            user_name: currentUser?.name || 'Instructor',
+            user_role: 'teacher',
+            token,
+          })
+        )
+        // Request existing peers in room
+        ws.send(
+          JSON.stringify({
+            type: 'get_peers',
+          })
+        )
+      }
 
       ws.onmessage = (event) => {
         try {
@@ -296,11 +336,12 @@ export default function TeacherLiveMonitoringPage() {
           if (!payload || typeof payload !== 'object') return
 
           const msgType = payload.type
+          const currentUser = userRef.current
 
           // A1. Room Peers List (from get_peers) -> Initiate WebRTC offers to all present students
           if (msgType === 'room_peers' && Array.isArray(payload.peers)) {
             payload.peers.forEach((peer: any) => {
-              if (!peer.peer_id || peer.peer_id === user?.id) return
+              if (!peer.peer_id || peer.peer_id === currentUser?.id) return
               setPeers((prev) => {
                 const exists = prev.some((p) => p.id === peer.peer_id)
                 if (exists) return prev
@@ -329,7 +370,7 @@ export default function TeacherLiveMonitoringPage() {
           }
 
           // A2. Student Joined Classroom -> Teacher Initiates WebRTC Offer
-          else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== user?.id) {
+          else if (msgType === 'peer_joined' && payload.peer_id && payload.peer_id !== currentUser?.id) {
             setPeers((prev) => {
               const exists = prev.some((p) => p.id === payload.peer_id)
               if (exists) {
@@ -353,7 +394,7 @@ export default function TeacherLiveMonitoringPage() {
               ]
             })
 
-            // Teacher as existing participant initiates WebRTC mesh call (deferred if local media not ready)
+            // Teacher as existing participant initiates WebRTC mesh call
             if (localMediaReadyRef.current && webrtcRef.current) {
               webrtcRef.current.initiateOffer(payload.peer_id)
             } else {
@@ -362,7 +403,7 @@ export default function TeacherLiveMonitoringPage() {
           }
 
           // B. WebRTC Signaling Dispatch (Answer / Candidate from Student)
-          else if (msgType === 'webrtc_signal' && payload.target_id === user?.id) {
+          else if (msgType === 'webrtc_signal' && payload.target_id === currentUser?.id) {
             if (payload.sender_id) {
               setPeers((prev) => {
                 const exists = prev.some((p) => p.id === payload.sender_id)
@@ -389,7 +430,7 @@ export default function TeacherLiveMonitoringPage() {
           }
 
           // C. Peer Status Update (Mic, Camera, Screen Share)
-          else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== user?.id) {
+          else if (msgType === 'peer_status' && payload.peer_id && payload.peer_id !== currentUser?.id) {
             setPeers((prev) =>
               prev.map((p) =>
                 p.id === payload.peer_id
@@ -484,29 +525,37 @@ export default function TeacherLiveMonitoringPage() {
         }
       }
 
-        ws.onerror = () => setIsConnected(false)
-        ws.onclose = () => {
-          setIsConnected(false)
-          if (!isMountedWs) return
-          if (reconnectAttempts < maxReconnectAttempts) {
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 12000)
-            reconnectAttempts++
-            setTimeout(connectWsInner, delay)
-          }
-        }
-      } catch (err) {
-        console.error('[Teacher WS] WebSocket connection error:', err)
+      ws.onerror = (e) => {
+        console.warn('[Teacher WS] Socket error:', e)
+        if (isMounted) setIsConnected(false)
+      }
+
+      ws.onclose = (e) => {
+        console.warn('[Teacher WS] Socket closed:', e.code, e.reason)
+        if (!isMounted) return
+        setIsConnected(false)
+        const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 8000)
+        reconnectAttempts++
+        reconnectTimeout = setTimeout(connectWs, delay)
       }
     }
 
-    connectWsInner()
+    connectWs()
 
-    // Expose cleanup so caller can stop reconnecting on unmount
     return () => {
-      isMountedWs = false
-      if (wsRef.current) wsRef.current.close()
+      isMounted = false
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      if (wsRef.current) {
+        wsRef.current.onopen = null
+        wsRef.current.onmessage = null
+        wsRef.current.onerror = null
+        wsRef.current.onclose = null
+        try { wsRef.current.close() } catch { }
+        wsRef.current = null
+      }
+      setIsConnected(false)
     }
-  }
+  }, [classData?.class_code])
 
   // 3. Media Controls Handlers (Mic & Screen Sharing Only - Teacher Camera Disabled)
   const handleToggleMic = () => {
@@ -515,12 +564,13 @@ export default function TeacherLiveMonitoringPage() {
     if (webrtcRef.current) {
       webrtcRef.current.toggleAudio(nextState)
     }
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+    const currentUser = userRef.current
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUser) {
       wsRef.current.send(
         JSON.stringify({
           type: 'peer_status',
-          peer_id: user.id,
-          peer_name: user.name,
+          peer_id: currentUser.id,
+          peer_name: currentUser.name,
           peer_role: 'teacher',
           user_role: 'teacher',
           is_camera_on: false,
@@ -533,6 +583,7 @@ export default function TeacherLiveMonitoringPage() {
 
   const handleToggleScreenShare = async () => {
     if (!webrtcRef.current) return
+    const currentUser = userRef.current
 
     if (isScreenSharing) {
       webrtcRef.current.stopScreenShare()
@@ -540,12 +591,12 @@ export default function TeacherLiveMonitoringPage() {
       setDisplayStream(null)
       showToast({ type: 'info', title: 'Screen Share Ended', message: 'You stopped presenting your screen.' })
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUser) {
         wsRef.current.send(
           JSON.stringify({
             type: 'peer_status',
-            peer_id: user.id,
-            peer_name: user.name,
+            peer_id: currentUser.id,
+            peer_name: currentUser.name,
             peer_role: 'teacher',
             user_role: 'teacher',
             is_camera_on: false,
@@ -560,12 +611,13 @@ export default function TeacherLiveMonitoringPage() {
           setIsScreenSharing(false)
           setDisplayStream(null)
           showToast({ type: 'info', title: 'Screen Share Stopped', message: 'Display capture ended.' })
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+          const curr = userRef.current
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && curr) {
             wsRef.current.send(
               JSON.stringify({
                 type: 'peer_status',
-                peer_id: user.id,
-                peer_name: user.name,
+                peer_id: curr.id,
+                peer_name: curr.name,
                 peer_role: 'teacher',
                 user_role: 'teacher',
                 is_camera_on: false,
@@ -581,12 +633,12 @@ export default function TeacherLiveMonitoringPage() {
         setIsScreenSharing(true)
         showToast({ type: 'success', title: 'Screen Share Active', message: 'Now presenting your screen to the class.' })
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUser) {
           wsRef.current.send(
             JSON.stringify({
               type: 'peer_status',
-              peer_id: user.id,
-              peer_name: user.name,
+              peer_id: currentUser.id,
+              peer_name: currentUser.name,
               peer_role: 'teacher',
               user_role: 'teacher',
               is_camera_on: false,

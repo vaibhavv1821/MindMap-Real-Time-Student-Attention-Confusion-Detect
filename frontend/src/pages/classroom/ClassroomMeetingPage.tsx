@@ -371,14 +371,15 @@ export default function ClassroomMeetingPage() {
 
       ws.onopen = () => {
         reconnectAttempts = 0
+        const currentUser = userRef.current || user
         const token = localStorage.getItem('access_token') || ''
         // Announce identity and join room with token
         ws.send(
           JSON.stringify({
             type: 'join',
-            user_id: user.id,
-            user_name: user.name,
-            user_role: user.role,
+            user_id: currentUser.id,
+            user_name: currentUser.name,
+            user_role: currentUser.role,
             token,
           })
         )
@@ -633,13 +634,12 @@ export default function ClassroomMeetingPage() {
         }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (e) => {
+        console.warn('[Student WS] Socket closed:', e.code, e.reason)
         if (!isMounted) return
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000)
-          reconnectAttempts++
-          reconnectTimeout = setTimeout(connectWs, delay)
-        }
+        const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 8000)
+        reconnectAttempts++
+        reconnectTimeout = setTimeout(connectWs, delay)
       }
     }
 
@@ -648,7 +648,14 @@ export default function ClassroomMeetingPage() {
     return () => {
       isMounted = false
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
-      if (wsRef.current) wsRef.current.close()
+      if (wsRef.current) {
+        wsRef.current.onopen = null
+        wsRef.current.onmessage = null
+        wsRef.current.onerror = null
+        wsRef.current.onclose = null
+        try { wsRef.current.close() } catch { }
+        wsRef.current = null
+      }
     }
   }, [targetCode, user, isTeacher])
 
@@ -660,39 +667,59 @@ export default function ClassroomMeetingPage() {
   const isCameraOnRef = useRef(isCameraOn)
   isCameraOnRef.current = isCameraOn
 
-  // 6. Emit Periodic Telemetry to WebSocket (every 2 seconds)
+  // 6. Emit Periodic Telemetry to WebSocket (every 2 seconds) + REST Heartbeat Fallback (every 4 seconds)
   useEffect(() => {
+    let tickCount = 0
     const timer = setInterval(() => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
-        const curMetrics = metricsRef.current
-        wsRef.current.send(
-          JSON.stringify({
-            // 'type' field added so teacher-side handler can unambiguously identify telemetry messages
-            type: 'telemetry',
-            student_id: user.id,
-            student_name: user.name,
-            student_email: user.email,
-            attention_score: curMetrics.attentionScore,
-            confusion_score: curMetrics.confusionScore,
-            // also send as 'attention' / 'confusion' for backward compat with legacy teacher handler
-            attention: curMetrics.attentionScore,
-            confusion: curMetrics.confusionScore,
-            attention_state: curMetrics.mlPrediction.attention_state,
-            confusion_state: curMetrics.mlPrediction.confusion_state,
-            confidence: curMetrics.mlPrediction.confidence,
-            reasons: curMetrics.mlPrediction.reasons,
-            indicators: curMetrics.behaviouralIndicators,
-            is_hand_raised: isHandRaisedRef.current,
-            camera_active: isCameraOnRef.current,
-            connection_status: isCameraOnRef.current ? 'ONLINE' : 'CAMERA_MUTED',
-            timestamp_ms: Date.now(),
-          })
-        )
+      const currentUser = userRef.current
+      if (!currentUser || !targetCode) return
+
+      const curMetrics = metricsRef.current
+      const payload = {
+        type: 'telemetry',
+        student_id: currentUser.id,
+        student_name: currentUser.name,
+        student_email: currentUser.email,
+        attention_score: curMetrics.attentionScore,
+        confusion_score: curMetrics.confusionScore,
+        attention: curMetrics.attentionScore,
+        confusion: curMetrics.confusionScore,
+        attention_state: curMetrics.mlPrediction.attention_state,
+        confusion_state: curMetrics.mlPrediction.confusion_state,
+        confidence: curMetrics.mlPrediction.confidence,
+        reasons: curMetrics.mlPrediction.reasons,
+        indicators: curMetrics.behaviouralIndicators,
+        is_hand_raised: isHandRaisedRef.current,
+        camera_active: isCameraOnRef.current,
+        connection_status: isCameraOnRef.current ? 'ONLINE' : 'CAMERA_MUTED',
+        timestamp_ms: Date.now(),
+      }
+
+      // Fast-channel: WebSocket broadcast
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(payload))
+      }
+
+      // Robust fallback: REST heartbeat every 4 seconds (every 2 ticks)
+      // Directly updates MongoDB session_participants and broadcasts to WebSocket room
+      tickCount++
+      if (tickCount % 2 === 0) {
+        classApi.sendStudentTelemetry(targetCode, {
+          attention_score: curMetrics.attentionScore,
+          confusion_score: curMetrics.confusionScore,
+          camera_active: isCameraOnRef.current,
+          connection_status: isCameraOnRef.current ? 'ONLINE' : 'CAMERA_MUTED',
+          student_name: currentUser.name,
+          student_email: currentUser.email,
+          reasons: curMetrics.mlPrediction.reasons,
+        }).catch(() => {
+          // silent fallback
+        })
       }
     }, 2000)
 
     return () => clearInterval(timer)
-  }, [user])
+  }, [targetCode])
 
   // 7. Chat Send Handler
   const handleSendMessage = async (e?: React.FormEvent) => {

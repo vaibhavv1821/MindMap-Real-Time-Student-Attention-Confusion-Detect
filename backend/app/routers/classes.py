@@ -5,6 +5,7 @@ import string
 from datetime import datetime, timezone
 from typing import List, Optional
 from bson import ObjectId
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.db.mongodb import get_db
@@ -615,6 +616,100 @@ async def get_class_students(
             )
         )
     return roster
+
+
+class StudentTelemetryIn(BaseModel):
+    student_id: Optional[str] = None
+    student_name: Optional[str] = "Student"
+    student_email: Optional[str] = ""
+    attention_score: float = 85.0
+    confusion_score: float = 15.0
+    camera_active: bool = True
+    connection_status: str = "ONLINE"
+    reasons: Optional[List[str]] = None
+
+
+@router.post("/{class_id_or_code}/telemetry")
+async def post_student_telemetry(
+    class_id_or_code: str,
+    payload: StudentTelemetryIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    HTTP REST Fallback for real-time student telemetry.
+    Ensures telemetry persists into session_participants in MongoDB
+    and fans out to the active WebSocket room even if browser sockets fluctuate.
+    """
+    db = get_db()
+    clean_val = unquote(str(class_id_or_code or "")).strip()
+    query = {"_id": ObjectId(clean_val)} if ObjectId.is_valid(clean_val) else {"class_code": clean_val.upper()}
+    class_doc = await db["classes"].find_one(query)
+    if not class_doc and not ObjectId.is_valid(clean_val):
+        class_doc = await db["classes"].find_one({"class_code": {"$regex": f"^{re.escape(clean_val)}$", "$options": "i"}})
+    if not class_doc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Classroom not found")
+
+    real_class_id = str(class_doc["_id"])
+    canonical_code = str(class_doc.get("class_code", clean_val)).strip()
+    student_id = str(current_user["_id"])
+    student_name = payload.student_name or current_user.get("name", "Student")
+    student_email = payload.student_email or current_user.get("email", "")
+
+    now = datetime.now(timezone.utc)
+    active_session = await db["sessions"].find_one({"class_id": real_class_id, "status": "LIVE"})
+    if not active_session:
+        sess_res = await db["sessions"].insert_one({
+            "class_id": real_class_id,
+            "class_code": canonical_code,
+            "teacher_id": class_doc.get("teacher_id"),
+            "status": "LIVE",
+            "started_at": now,
+            "peak_students": 1,
+        })
+        await db["classes"].update_one({"_id": class_doc["_id"]}, {"$set": {"status": "LIVE"}})
+        s_id = str(sess_res.inserted_id)
+    else:
+        s_id = str(active_session["_id"])
+
+    # Update session_participants
+    await db["session_participants"].update_one(
+        {"session_id": s_id, "student_id": student_id},
+        {
+            "$set": {
+                "avg_attention": float(payload.attention_score),
+                "avg_confusion": float(payload.confusion_score),
+                "student_name": student_name,
+                "student_email": student_email,
+                "status": "PRESENT",
+                "last_seen": now,
+            },
+            "$setOnInsert": {
+                "joined_at": now,
+                "class_id": real_class_id,
+            }
+        },
+        upsert=True
+    )
+
+    # Broadcast via WebSocket manager to any active room listeners
+    room_key = normalize_room_key(canonical_code)
+    telemetry_data = {
+        "type": "telemetry",
+        "student_id": student_id,
+        "student_name": student_name,
+        "student_email": student_email,
+        "attention_score": payload.attention_score,
+        "confusion_score": payload.confusion_score,
+        "attention": payload.attention_score,
+        "confusion": payload.confusion_score,
+        "camera_active": payload.camera_active,
+        "connection_status": payload.connection_status,
+        "reasons": payload.reasons or [],
+        "timestamp_ms": int(now.timestamp() * 1000),
+    }
+    await manager.broadcast(telemetry_data, room_key)
+
+    return {"status": "OK", "session_id": s_id}
 
 
 @router.get("/{class_id_or_code}/analytics", response_model=ClassAnalyticsOut)

@@ -8,25 +8,17 @@ const PROD_API_URL = `https://${PROD_BACKEND_ORIGIN}/api`
 const PROD_WS_URL = `wss://${PROD_BACKEND_ORIGIN}/ws`
 
 function getApiBaseUrl(): string {
-  let api = envApi
   const isBrowser = typeof window !== 'undefined'
   const isHttps = isBrowser && window.location.protocol === 'https:'
   const isLocalHost = isBrowser && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
 
-  if (!api) {
-    if (isBrowser && !isLocalHost) {
-      api = PROD_API_URL
-    } else {
-      api = 'http://localhost:8000/api'
-    }
+  // When deployed to production/remote domains (such as mindmap.devanshupatil.tech or Vercel),
+  // strictly use the production API URL to prevent any misconfigured localhost or relative paths.
+  if (isBrowser && !isLocalHost) {
+    return PROD_API_URL
   }
 
-  // If running on a public remote domain but configured with localhost, fallback to production backend
-  if (isBrowser && !isLocalHost && (api.includes('localhost') || api.includes('127.0.0.1'))) {
-    api = PROD_API_URL
-  }
-
-  // Prevent mixed-content HTTP requests on HTTPS
+  let api = envApi || 'http://localhost:8000/api'
   if (isHttps && api.startsWith('http://')) {
     api = api.replace(/^http:\/\//i, 'https://')
   }
@@ -35,31 +27,33 @@ function getApiBaseUrl(): string {
 }
 
 function getWsBaseUrl(): string {
-  let ws = envWs
   const isBrowser = typeof window !== 'undefined'
   const isHttps = isBrowser && window.location.protocol === 'https:'
   const isLocalHost = isBrowser && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
 
-  if (!ws) {
-    if (isBrowser && !isLocalHost) {
-      ws = PROD_WS_URL
-    } else {
-      const api = getApiBaseUrl()
-      ws = api.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:').replace(/\/api$/, '') + '/ws'
-    }
+  // When deployed to production/remote domains (such as mindmap.devanshupatil.tech or Vercel),
+  // strictly enforce the production secure WebSocket endpoint wss://.../ws.
+  if (isBrowser && !isLocalHost) {
+    return PROD_WS_URL
   }
 
-  // If running on a public remote domain but configured with localhost, fallback to production backend
-  if (isBrowser && !isLocalHost && (ws.includes('localhost') || ws.includes('127.0.0.1'))) {
-    ws = PROD_WS_URL
-  }
+  let ws = envWs || 'ws://localhost:8000/ws'
+
+  // Normalize protocol: replace http(s):// with ws(s)://
+  ws = ws.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://')
 
   // CRITICAL: On HTTPS pages, WebSockets MUST be wss:// (insecure ws:// is strictly blocked by browsers)
   if (isHttps && ws.startsWith('ws://')) {
     ws = ws.replace(/^ws:\/\//i, 'wss://')
   }
 
-  return ws.replace(/\/+$/, '')
+  // Ensure the base URL ends with /ws
+  ws = ws.replace(/\/+$/, '')
+  if (!ws.endsWith('/ws')) {
+    ws = ws.replace(/\/api$/, '') + '/ws'
+  }
+
+  return ws
 }
 
 export const env = {

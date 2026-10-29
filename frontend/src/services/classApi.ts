@@ -180,4 +180,29 @@ export const classApi = {
     if (!res.ok) throw new Error('Failed to load class analytics')
     return res.json()
   },
+
+  async sendStudentTelemetry(
+    idOrCode: string,
+    data: {
+      attention_score: number
+      confusion_score: number
+      camera_active?: boolean
+      connection_status?: string
+      student_name?: string
+      student_email?: string
+      reasons?: string[]
+    }
+  ): Promise<{ status: string; session_id?: string }> {
+    try {
+      const res = await authenticatedFetch(`${env.apiBaseUrl}/classes/${encodeURIComponent(idOrCode)}/telemetry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) return { status: 'FAILED' }
+      return res.json()
+    } catch {
+      return { status: 'NETWORK_ERROR' }
+    }
+  },
 }

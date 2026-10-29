@@ -105,11 +105,29 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
     WebSocket endpoint for real-time classroom telemetry, chat, and WebRTC signaling.
     Zero video bytes accepted. Signaling and numerical telemetry only.
     """
-    room_key = normalize_room_key(class_code)
+    from bson import ObjectId
+    from app.db.mongodb import get_db
+    db = get_db()
+
+    raw_code = unquote(str(class_code or "")).strip()
+    canonical_code = raw_code
+    if ObjectId.is_valid(raw_code):
+        try:
+            cdoc = await db["classes"].find_one({"_id": ObjectId(raw_code)})
+            if cdoc and cdoc.get("class_code"):
+                canonical_code = str(cdoc["class_code"]).strip()
+        except Exception:
+            pass
+
+    room_key = normalize_room_key(canonical_code)
     await manager.connect(websocket, room_key)
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                break
+
             if not isinstance(data, dict):
                 continue
 
@@ -368,12 +386,19 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                 try:
                     from app.db.mongodb import get_db
                     from datetime import datetime, timezone
+                    from bson import ObjectId
                     db = get_db()
                     now = datetime.now(timezone.utc)
-                    code_clean = unquote(class_code).strip().upper()
-                    class_doc = await db["classes"].find_one({"class_code": code_clean})
+                    code_clean = unquote(canonical_code).strip()
+                    class_doc = await db["classes"].find_one({"class_code": code_clean.upper()})
+                    if not class_doc:
+                        class_doc = await db["classes"].find_one({"class_code": {"$regex": f"^{re.escape(code_clean)}$", "$options": "i"}})
+                    if not class_doc and ObjectId.is_valid(code_clean):
+                        class_doc = await db["classes"].find_one({"_id": ObjectId(code_clean)})
+
                     if class_doc:
                         real_class_id = str(class_doc["_id"])
+                        real_class_code = str(class_doc.get("class_code", code_clean)).strip()
                         active_session = await db["sessions"].find_one({
                             "class_id": real_class_id,
                             "status": "LIVE"
@@ -381,7 +406,7 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                         if not active_session:
                             sess_res = await db["sessions"].insert_one({
                                 "class_id": real_class_id,
-                                "class_code": code_clean,
+                                "class_code": real_class_code,
                                 "teacher_id": class_doc.get("teacher_id"),
                                 "status": "LIVE",
                                 "started_at": now,
@@ -415,7 +440,7 @@ async def websocket_telemetry_endpoint(websocket: WebSocket, class_code: str):
                         )
                 except Exception:
                     pass
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         user_info = manager.disconnect(websocket, room_key)
         if user_info and user_info.get("user_id"):
             try:
